@@ -1,0 +1,33 @@
+{
+  "name": "RobloxMagicSystem",
+  "tree": {
+    "$className": "DataModel",
+    "ReplicatedStorage": {
+      "Shared": {
+        "$path": "ReplicatedStorage/Shared"
+      },
+      "Remotes": {
+        "$className": "Folder",
+        "CastSpellRequest": {
+          "$className": "RemoteEvent"
+        },
+        "SpellFx": {
+          "$className": "RemoteEvent"
+        },
+        "GetSpellPreview": {
+          "$className": "RemoteFunction"
+        }
+      }
+    },
+    "ServerScriptService": {
+      "Magic": {
+        "$path": "ServerScriptService/Magic"
+      }
+    },
+    "StarterPlayer": {
+      "StarterPlayerScripts": {
+        "$path": "StarterPlayer/StarterPlayerScripts"
+      }
+    }
+  }
+}
