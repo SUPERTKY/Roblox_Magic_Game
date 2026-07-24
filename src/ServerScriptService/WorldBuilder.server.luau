@@ -52,6 +52,33 @@ lobbySpawn.Neutral = true
 lobbySpawn.Duration = 0
 lobbySpawn.Parent = world
 
+local forge = makePart(
+	"SpellForge",
+	Vector3.new(18, 1, 10),
+	CFrame.new(0, 1.5, -7),
+	Color3.fromRGB(147, 94, 255),
+	Enum.Material.Neon,
+	world
+)
+forge.CanCollide = true
+
+local forgeSign = Instance.new("BillboardGui")
+forgeSign.Name = "ForgeSign"
+forgeSign.Size = UDim2.fromOffset(360, 70)
+forgeSign.StudsOffset = Vector3.new(0, 5, 0)
+forgeSign.AlwaysOnTop = true
+forgeSign.Parent = forge
+
+local forgeText = Instance.new("TextLabel")
+forgeText.Size = UDim2.fromScale(1, 1)
+forgeText.BackgroundColor3 = Color3.fromRGB(22, 25, 35)
+forgeText.BackgroundTransparency = 0.15
+forgeText.Text = "先に自分の魔法を作成しよう"
+forgeText.TextColor3 = Color3.fromRGB(255, 255, 255)
+forgeText.Font = Enum.Font.GothamBold
+forgeText.TextScaled = true
+forgeText.Parent = forgeSign
+
 -- Magic gate
 local gateColor = Color3.fromRGB(118, 74, 255)
 makePart("GateLeft", Vector3.new(3, 15, 3), CFrame.new(-7, 7.5, -34), gateColor, Enum.Material.Slate, world)
@@ -77,8 +104,8 @@ portalLight.Range = 22
 portalLight.Parent = portal
 
 local portalPrompt = Instance.new("ProximityPrompt")
-portalPrompt.ActionText = "バトルへ入る"
-portalPrompt.ObjectText = "魔法ゲート"
+portalPrompt.ActionText = "作成した魔法でバトルへ"
+portalPrompt.ObjectText = "魔法作成後に入れるゲート"
 portalPrompt.KeyboardKeyCode = Enum.KeyCode.E
 portalPrompt.RequiresLineOfSight = false
 portalPrompt.MaxActivationDistance = 12
@@ -148,4 +175,3 @@ for index, position in spawnPositions do
 	marker.CanQuery = false
 	marker.Transparency = 1
 end
-
