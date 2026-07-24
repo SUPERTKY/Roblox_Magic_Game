@@ -1,13 +1,16 @@
 --!strict
 
+local DataStoreService = game:GetService("DataStoreService")
 local Debris = game:GetService("Debris")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
+local TextService = game:GetService("TextService")
 local TweenService = game:GetService("TweenService")
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local SpellDefinitions = require(Shared:WaitForChild("SpellDefinitions"))
+local spellStore = DataStoreService:GetDataStore("PlayerCustomSpell_v1")
 
 local remotes = ReplicatedStorage:FindFirstChild("Remotes")
 if not remotes then
@@ -16,12 +19,20 @@ if not remotes then
 	remotes.Parent = ReplicatedStorage
 end
 
-local castSpell = remotes:FindFirstChild("CastSpell")
-if not castSpell then
-	castSpell = Instance.new("RemoteEvent")
-	castSpell.Name = "CastSpell"
-	castSpell.Parent = remotes
+local function getOrCreateRemote(name: string, className: string): Instance
+	local existing = remotes:FindFirstChild(name)
+	if existing then
+		return existing
+	end
+	local remote = Instance.new(className)
+	remote.Name = name
+	remote.Parent = remotes
+	return remote
 end
+
+local castSpell = getOrCreateRemote("CastSpell", "RemoteEvent") :: RemoteEvent
+local saveCustomSpell = getOrCreateRemote("SaveCustomSpell", "RemoteFunction") :: RemoteFunction
+local systemMessage = getOrCreateRemote("SystemMessage", "RemoteEvent") :: RemoteEvent
 
 local world = workspace:WaitForChild("MagicGameWorld")
 local portal = world:WaitForChild("BattlePortal") :: BasePart
@@ -29,8 +40,117 @@ local portalPrompt = portal:WaitForChild("ProximityPrompt") :: ProximityPrompt
 local spawnPointsFolder = world:WaitForChild("BattleSpawnPoints")
 local random = Random.new()
 
+local customSpells: { [Player]: any } = {}
 local portalDebounce: { [Player]: boolean } = {}
-local lastCastAt: { [Player]: { [string]: number } } = {}
+local lastCastAt: { [Player]: number } = {}
+local lastSaveRequestAt: { [Player]: number } = {}
+
+local function setSpellAttributes(player: Player, spell: any?)
+	if not spell then
+		player:SetAttribute("HasCustomSpell", false)
+		player:SetAttribute("CustomSpellName", nil)
+		player:SetAttribute("CustomSpellElement", nil)
+		player:SetAttribute("CustomSpellStyle", nil)
+		customSpells[player] = nil
+		return
+	end
+
+	customSpells[player] = spell
+	player:SetAttribute("CustomSpellName", spell.Name)
+	player:SetAttribute("CustomSpellElement", spell.ElementId)
+	player:SetAttribute("CustomSpellStyle", spell.StyleId)
+	player:SetAttribute("HasCustomSpell", true)
+end
+
+local function loadCustomSpell(player: Player)
+	player:SetAttribute("SpellDataLoaded", false)
+	setSpellAttributes(player, nil)
+
+	local success, saved = pcall(function()
+		return spellStore:GetAsync(tostring(player.UserId))
+	end)
+
+	if player.Parent ~= Players then
+		return
+	end
+
+	if success and typeof(saved) == "table" then
+		local name = saved.Name
+		local elementId = saved.ElementId
+		local styleId = saved.StyleId
+		if typeof(name) == "string" and typeof(elementId) == "string" and typeof(styleId) == "string" then
+			local spell = SpellDefinitions.BuildSpell(name, elementId, styleId)
+			if spell then
+				setSpellAttributes(player, spell)
+			end
+		end
+	elseif not success then
+		warn("Custom spell load failed for " .. player.Name)
+	end
+
+	player:SetAttribute("SpellDataLoaded", true)
+end
+
+local function filterSpellName(player: Player, rawName: string): (string?, string?)
+	local cleaned = string.match(rawName, "^%s*(.-)%s*$") or ""
+	local characterCount = utf8.len(cleaned)
+	if not characterCount or characterCount < 1 or characterCount > 20 then
+		return nil, "魔法名は1〜20文字で入力してください"
+	end
+
+	local success, filtered = pcall(function()
+		local result = TextService:FilterStringAsync(cleaned, player.UserId, Enum.TextFilterContext.PublicChat)
+		return result:GetNonChatStringForBroadcastAsync()
+	end)
+	if not success or typeof(filtered) ~= "string" or filtered == "" then
+		return nil, "魔法名を確認できませんでした。別の名前を試してください"
+	end
+
+	return filtered, nil
+end
+
+saveCustomSpell.OnServerInvoke = function(player: Player, rawName: unknown, elementId: unknown, styleId: unknown)
+	if player:GetAttribute("IsInBattle") == true then
+		return { Success = false, Message = "バトル中は魔法を変更できません" }
+	end
+	local now = os.clock()
+	if now - (lastSaveRequestAt[player] or 0) < 2 then
+		return { Success = false, Message = "少し待ってからもう一度作成してください" }
+	end
+	lastSaveRequestAt[player] = now
+
+	if typeof(rawName) ~= "string" or typeof(elementId) ~= "string" or typeof(styleId) ~= "string" then
+		return { Success = false, Message = "魔法の設定が正しくありません" }
+	end
+
+	local filteredName, nameError = filterSpellName(player, rawName)
+	if not filteredName then
+		return { Success = false, Message = nameError }
+	end
+
+	local spell = SpellDefinitions.BuildSpell(filteredName, elementId, styleId)
+	if not spell then
+		return { Success = false, Message = "属性または戦闘スタイルが正しくありません" }
+	end
+
+	setSpellAttributes(player, spell)
+
+	local saved, saveError = pcall(function()
+		spellStore:SetAsync(tostring(player.UserId), {
+			Name = spell.Name,
+			ElementId = spell.ElementId,
+			StyleId = spell.StyleId,
+		})
+	end)
+	if not saved then
+		warn("Custom spell save failed for " .. player.Name .. ": " .. tostring(saveError))
+	end
+
+	return {
+		Success = true,
+		Message = if saved then "魔法「" .. spell.Name .. "」を作成して保存しました" else "魔法を作成しました（今回は一時保存です）",
+	}
+end
 
 local function getAliveCharacter(player: Player): (Model?, Humanoid?, BasePart?)
 	local character = player.Character
@@ -49,6 +169,14 @@ end
 
 local function sendPlayerToBattle(player: Player)
 	if portalDebounce[player] or player:GetAttribute("IsInBattle") then
+		return
+	end
+	if player:GetAttribute("SpellDataLoaded") ~= true then
+		systemMessage:FireClient(player, "魔法データを読み込み中です")
+		return
+	end
+	if player:GetAttribute("HasCustomSpell") ~= true or not customSpells[player] then
+		systemMessage:FireClient(player, "先に名前・属性・戦闘スタイルを選んで魔法を作成してください")
 		return
 	end
 
@@ -94,7 +222,6 @@ portal.Touched:Connect(function(hit: BasePart)
 		sendPlayerToBattle(player)
 	end
 end)
-
 portalPrompt.Triggered:Connect(sendPlayerToBattle)
 
 local function findHumanoidFromPart(part: Instance?): Humanoid?
@@ -136,21 +263,21 @@ local function applySlow(humanoid: Humanoid, duration: number)
 	end)
 end
 
-local function damageHumanoid(attacker: Player, humanoid: Humanoid, damage: number, slowDuration: number)
+local function damageHumanoid(attacker: Player, humanoid: Humanoid, spell: any)
 	if not canDamage(attacker, humanoid) then
 		return
 	end
-	humanoid:TakeDamage(damage)
-	applySlow(humanoid, slowDuration)
+	humanoid:TakeDamage(spell.Damage)
+	applySlow(humanoid, spell.SlowDuration)
 end
 
-local function showImpact(position: Vector3, color: Color3, radius: number)
+local function showImpact(position: Vector3, spell: any)
 	local effect = Instance.new("Part")
-	effect.Name = "MagicImpact"
+	effect.Name = spell.Name .. "_Impact"
 	effect.Shape = Enum.PartType.Ball
-	effect.Size = Vector3.new(1, 1, 1)
+	effect.Size = Vector3.one
 	effect.CFrame = CFrame.new(position)
-	effect.Color = color
+	effect.Color = spell.Color
 	effect.Material = Enum.Material.Neon
 	effect.Anchored = true
 	effect.CanCollide = false
@@ -159,27 +286,20 @@ local function showImpact(position: Vector3, color: Color3, radius: number)
 	effect.Transparency = 0.2
 	effect.Parent = world
 
-	local finalDiameter = math.max(3, radius * 2)
+	local finalDiameter = math.max(3, spell.BlastRadius * 2)
 	TweenService:Create(
 		effect,
 		TweenInfo.new(0.28, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
-		{ Size = Vector3.new(finalDiameter, finalDiameter, finalDiameter), Transparency = 1 }
+		{ Size = Vector3.one * finalDiameter, Transparency = 1 }
 	):Play()
 	Debris:AddItem(effect, 0.35)
 end
 
-local function damageAtImpact(
-	attacker: Player,
-	hitPart: Instance?,
-	position: Vector3,
-	damage: number,
-	blastRadius: number,
-	slowDuration: number
-)
-	if blastRadius <= 0 then
+local function damageAtImpact(attacker: Player, hitPart: Instance?, position: Vector3, spell: any)
+	if spell.BlastRadius <= 0 then
 		local humanoid = findHumanoidFromPart(hitPart)
 		if humanoid then
-			damageHumanoid(attacker, humanoid, damage, slowDuration)
+			damageHumanoid(attacker, humanoid, spell)
 		end
 		return
 	end
@@ -189,18 +309,18 @@ local function damageAtImpact(
 	overlapParams.FilterDescendantsInstances = attacker.Character and { attacker.Character } or {}
 
 	local hitHumanoids: { [Humanoid]: boolean } = {}
-	for _, part in workspace:GetPartBoundsInRadius(position, blastRadius, overlapParams) do
+	for _, part in workspace:GetPartBoundsInRadius(position, spell.BlastRadius, overlapParams) do
 		local humanoid = findHumanoidFromPart(part)
 		if humanoid and not hitHumanoids[humanoid] then
 			hitHumanoids[humanoid] = true
-			damageHumanoid(attacker, humanoid, damage, slowDuration)
+			damageHumanoid(attacker, humanoid, spell)
 		end
 	end
 end
 
-local function launchProjectile(player: Player, spellName: string, targetPosition: Vector3)
-	local definition = SpellDefinitions[spellName]
-	if not definition or player:GetAttribute("IsInBattle") ~= true then
+local function launchProjectile(player: Player, targetPosition: Vector3)
+	local spell = customSpells[player]
+	if not spell or player:GetAttribute("IsInBattle") ~= true then
 		return
 	end
 
@@ -208,36 +328,29 @@ local function launchProjectile(player: Player, spellName: string, targetPositio
 	if not character or not root then
 		return
 	end
-
 	if targetPosition.X ~= targetPosition.X or targetPosition.Y ~= targetPosition.Y or targetPosition.Z ~= targetPosition.Z then
 		return
 	end
 
-	local cooldowns = lastCastAt[player]
-	if not cooldowns then
-		cooldowns = {}
-		lastCastAt[player] = cooldowns
-	end
-
 	local now = os.clock()
-	if now - (cooldowns[spellName] or 0) < definition.Cooldown then
+	if now - (lastCastAt[player] or 0) < spell.Cooldown then
 		return
 	end
-	cooldowns[spellName] = now
 
 	local origin = root.Position + Vector3.new(0, 1.6, 0)
 	local offset = targetPosition - origin
 	if offset.Magnitude < 1 then
 		return
 	end
+	lastCastAt[player] = now
 	local direction = offset.Unit
 
 	local projectile = Instance.new("Part")
-	projectile.Name = spellName
+	projectile.Name = spell.Name
 	projectile.Shape = Enum.PartType.Ball
-	projectile.Size = Vector3.one * definition.ProjectileRadius * 2
+	projectile.Size = Vector3.one * spell.ProjectileRadius * 2
 	projectile.CFrame = CFrame.new(origin + direction * 3)
-	projectile.Color = definition.Color
+	projectile.Color = spell.Color
 	projectile.Material = Enum.Material.Neon
 	projectile.Anchored = true
 	projectile.CanCollide = false
@@ -246,7 +359,7 @@ local function launchProjectile(player: Player, spellName: string, targetPositio
 	projectile.Parent = world
 
 	local light = Instance.new("PointLight")
-	light.Color = definition.Color
+	light.Color = spell.Color
 	light.Brightness = 2
 	light.Range = 10
 	light.Parent = projectile
@@ -267,21 +380,14 @@ local function launchProjectile(player: Player, spellName: string, targetPositio
 			return
 		end
 
-		local stepDistance = definition.Speed * math.min(deltaTime, 0.1)
+		local stepDistance = spell.Speed * math.min(deltaTime, 0.1)
 		local step = direction * stepDistance
 		local result = workspace:Raycast(position, step, raycastParams)
 
 		if result then
 			projectile.Position = result.Position
-			showImpact(result.Position, definition.Color, definition.BlastRadius)
-			damageAtImpact(
-				player,
-				result.Instance,
-				result.Position,
-				definition.Damage,
-				definition.BlastRadius,
-				definition.SlowDuration
-			)
+			showImpact(result.Position, spell)
+			damageAtImpact(player, result.Instance, result.Position, spell)
 			if connection then
 				connection:Disconnect()
 			end
@@ -293,7 +399,7 @@ local function launchProjectile(player: Player, spellName: string, targetPositio
 		travelled += stepDistance
 		projectile.Position = position
 
-		if travelled >= definition.Range then
+		if travelled >= spell.Range then
 			if connection then
 				connection:Disconnect()
 			end
@@ -302,11 +408,11 @@ local function launchProjectile(player: Player, spellName: string, targetPositio
 	end)
 end
 
-(castSpell :: RemoteEvent).OnServerEvent:Connect(function(player: Player, spellName: unknown, targetPosition: unknown)
-	if typeof(spellName) ~= "string" or typeof(targetPosition) ~= "Vector3" then
+castSpell.OnServerEvent:Connect(function(player: Player, targetPosition: unknown)
+	if typeof(targetPosition) ~= "Vector3" then
 		return
 	end
-	launchProjectile(player, spellName :: string, targetPosition :: Vector3)
+	launchProjectile(player, targetPosition :: Vector3)
 end)
 
 local function configurePlayer(player: Player)
@@ -314,6 +420,7 @@ local function configurePlayer(player: Player)
 	player.CharacterAdded:Connect(function()
 		player:SetAttribute("IsInBattle", false)
 	end)
+	task.spawn(loadCustomSpell, player)
 end
 
 Players.PlayerAdded:Connect(configurePlayer)
@@ -322,7 +429,8 @@ for _, player in Players:GetPlayers() do
 end
 
 Players.PlayerRemoving:Connect(function(player: Player)
+	customSpells[player] = nil
 	portalDebounce[player] = nil
 	lastCastAt[player] = nil
+	lastSaveRequestAt[player] = nil
 end)
-
