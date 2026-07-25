@@ -1,5 +1,6 @@
 --!strict
 
+local CollectionService = game:GetService("CollectionService")
 local DataStoreService = game:GetService("DataStoreService")
 local Debris = game:GetService("Debris")
 local Players = game:GetService("Players")
@@ -34,16 +35,21 @@ local castSpell = getOrCreateRemote("CastSpell", "RemoteEvent") :: RemoteEvent
 local saveCustomSpell = getOrCreateRemote("SaveCustomSpell", "RemoteFunction") :: RemoteFunction
 local systemMessage = getOrCreateRemote("SystemMessage", "RemoteEvent") :: RemoteEvent
 
+local BATTLE_GROUND_NAME = "BattleGround"
+local BATTLE_BOUNDS_NAME = "BattleBounds"
+local BATTLE_SPAWNS_NAME = "BattleSpawnPoints"
+local DESTRUCTIBLE_BUILDING_TAG = "DestructibleBuilding"
+
 local world = workspace:WaitForChild("MagicGameWorld")
 local portal = world:WaitForChild("BattlePortal") :: BasePart
 local portalPrompt = portal:WaitForChild("ProximityPrompt") :: ProximityPrompt
-local spawnPointsFolder = world:WaitForChild("BattleSpawnPoints")
 local random = Random.new()
 
 local customSpells: { [Player]: any } = {}
 local portalDebounce: { [Player]: boolean } = {}
 local lastCastAt: { [Player]: number } = {}
 local lastSaveRequestAt: { [Player]: number } = {}
+local collapsedBuildings: { [Instance]: boolean } = {}
 
 local function setSpellAttributes(player: Player, spell: any?)
 	if not spell then
@@ -167,6 +173,39 @@ local function getAliveCharacter(player: Player): (Model?, Humanoid?, BasePart?)
 	return character, humanoid, root
 end
 
+local function getBattleSetup(): (Instance?, Instance?, BasePart?)
+	local battleGround = workspace:FindFirstChild(BATTLE_GROUND_NAME)
+	if not battleGround then
+		return nil, nil, nil
+	end
+
+	local spawnPoints = battleGround:FindFirstChild(BATTLE_SPAWNS_NAME, true)
+	local bounds = battleGround:FindFirstChild(BATTLE_BOUNDS_NAME, true)
+	if not spawnPoints or not bounds or not bounds:IsA("BasePart") then
+		return battleGround, spawnPoints, nil
+	end
+
+	return battleGround, spawnPoints, bounds
+end
+
+local function isPointInsidePart(part: BasePart, point: Vector3): boolean
+	local localPoint = part.CFrame:PointToObjectSpace(point)
+	local halfSize = part.Size * 0.5
+	return math.abs(localPoint.X) <= halfSize.X
+		and math.abs(localPoint.Y) <= halfSize.Y
+		and math.abs(localPoint.Z) <= halfSize.Z
+end
+
+local function isPlayerInsideBattleGround(player: Player): boolean
+	if player:GetAttribute("IsInBattle") ~= true then
+		return false
+	end
+
+	local _, _, bounds = getBattleSetup()
+	local _, _, root = getAliveCharacter(player)
+	return bounds ~= nil and root ~= nil and isPointInsidePart(bounds, root.Position)
+end
+
 local function sendPlayerToBattle(player: Player)
 	if portalDebounce[player] or player:GetAttribute("IsInBattle") then
 		return
@@ -185,21 +224,30 @@ local function sendPlayerToBattle(player: Player)
 		return
 	end
 
-	local spawnPoints = spawnPointsFolder:GetChildren()
+	local battleGround, spawnPointsFolder, battleBounds = getBattleSetup()
+	if not battleGround or not spawnPointsFolder or not battleBounds then
+		systemMessage:FireClient(player, "バトルグラウンドの設定が未完成です")
+		return
+	end
+
+	local spawnPoints: { BasePart } = {}
+	for _, candidate in spawnPointsFolder:GetChildren() do
+		if candidate:IsA("BasePart") and isPointInsidePart(battleBounds, candidate.Position) then
+			table.insert(spawnPoints, candidate)
+		end
+	end
 	if #spawnPoints == 0 then
+		systemMessage:FireClient(player, "BattleBounds内にスポーン地点がありません")
 		return
 	end
 
 	portalDebounce[player] = true
-	player:SetAttribute("IsInBattle", true)
-
 	local chosen = spawnPoints[random:NextInteger(1, #spawnPoints)]
-	if chosen:IsA("BasePart") then
-		local offset = Vector3.new(random:NextNumber(-2, 2), 4, random:NextNumber(-2, 2))
-		character:PivotTo(chosen.CFrame + offset)
-		root.AssemblyLinearVelocity = Vector3.zero
-		root.AssemblyAngularVelocity = Vector3.zero
-	end
+	local offset = Vector3.new(random:NextNumber(-2, 2), 4, random:NextNumber(-2, 2))
+	character:PivotTo(chosen.CFrame + offset)
+	root.AssemblyLinearVelocity = Vector3.zero
+	root.AssemblyAngularVelocity = Vector3.zero
+	player:SetAttribute("IsInBattle", true)
 
 	local forceField = Instance.new("ForceField")
 	forceField.Visible = false
@@ -242,7 +290,7 @@ local function canDamage(attacker: Player, humanoid: Humanoid): boolean
 	end
 
 	local targetPlayer = Players:GetPlayerFromCharacter(targetCharacter)
-	return targetPlayer ~= nil and targetPlayer:GetAttribute("IsInBattle") == true
+	return targetPlayer ~= nil and isPlayerInsideBattleGround(targetPlayer)
 end
 
 local function applySlow(humanoid: Humanoid, duration: number)
@@ -269,6 +317,52 @@ local function damageHumanoid(attacker: Player, humanoid: Humanoid, spell: any)
 	end
 	humanoid:TakeDamage(spell.Damage)
 	applySlow(humanoid, spell.SlowDuration)
+end
+
+local function findDestructibleBuilding(hitPart: Instance?): Instance?
+	local current: Instance? = hitPart
+	while current and current ~= workspace do
+		if CollectionService:HasTag(current, DESTRUCTIBLE_BUILDING_TAG)
+			or current:GetAttribute("DestructibleBuilding") == true
+		then
+			return current
+		end
+		current = current.Parent
+	end
+	return nil
+end
+
+local function collapseBuilding(hitPart: Instance?, impactPosition: Vector3, spell: any)
+	if spell.CanDestroyBuildings ~= true then
+		return
+	end
+
+	local building = findDestructibleBuilding(hitPart)
+	if not building or collapsedBuildings[building] then
+		return
+	end
+	collapsedBuildings[building] = true
+	building:SetAttribute("CollapsedBySpell", true)
+
+	local parts: { BasePart } = {}
+	if building:IsA("BasePart") then
+		table.insert(parts, building)
+	end
+	for _, descendant in building:GetDescendants() do
+		if descendant:IsA("BasePart") then
+			table.insert(parts, descendant)
+		end
+	end
+
+	local impulseStrength = math.clamp(spell.Damage * 2.5, 45, 90)
+	for _, part in parts do
+		part.Anchored = false
+		part.CanCollide = true
+		local away = part.Position - impactPosition
+		local horizontalDirection = if away.Magnitude > 0.05 then away.Unit else Vector3.new(1, 0, 0)
+		local impulseDirection = (horizontalDirection + Vector3.new(0, 0.35, 0)).Unit
+		part:ApplyImpulse(impulseDirection * part.AssemblyMass * impulseStrength)
+	end
 end
 
 local function showImpact(position: Vector3, spell: any)
@@ -320,12 +414,19 @@ end
 
 local function launchProjectile(player: Player, targetPosition: Vector3)
 	local spell = customSpells[player]
-	if not spell or player:GetAttribute("IsInBattle") ~= true then
+	if not spell then
 		return
 	end
 
 	local character, _, root = getAliveCharacter(player)
 	if not character or not root then
+		return
+	end
+	if not isPlayerInsideBattleGround(player) then
+		if player:GetAttribute("IsInBattle") == true then
+			player:SetAttribute("IsInBattle", false)
+			systemMessage:FireClient(player, "魔法はバトルグラウンド内でのみ使えます")
+		end
 		return
 	end
 	if targetPosition.X ~= targetPosition.X or targetPosition.Y ~= targetPosition.Y or targetPosition.Z ~= targetPosition.Z then
@@ -387,6 +488,7 @@ local function launchProjectile(player: Player, targetPosition: Vector3)
 		if result then
 			projectile.Position = result.Position
 			showImpact(result.Position, spell)
+			collapseBuilding(result.Instance, result.Position, spell)
 			damageAtImpact(player, result.Instance, result.Position, spell)
 			if connection then
 				connection:Disconnect()
