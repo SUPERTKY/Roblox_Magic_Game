@@ -111,67 +111,23 @@ portalPrompt.RequiresLineOfSight = false
 portalPrompt.MaxActivationDistance = 12
 portalPrompt.Parent = portal
 
--- Battlefield
-local battlefieldCenter = Vector3.new(0, 0, -250)
-makePart(
-	"BattlefieldFloor",
-	Vector3.new(220, 2, 220),
-	CFrame.new(battlefieldCenter),
-	Color3.fromRGB(37, 41, 52),
-	Enum.Material.Basalt,
-	world
-)
-
-local wallColor = Color3.fromRGB(72, 62, 102)
-makePart("NorthWall", Vector3.new(224, 18, 4), CFrame.new(0, 9, -362), wallColor, Enum.Material.Rock, world)
-makePart("SouthWall", Vector3.new(224, 18, 4), CFrame.new(0, 9, -138), wallColor, Enum.Material.Rock, world)
-makePart("WestWall", Vector3.new(4, 18, 220), CFrame.new(-112, 9, -250), wallColor, Enum.Material.Rock, world)
-makePart("EastWall", Vector3.new(4, 18, 220), CFrame.new(112, 9, -250), wallColor, Enum.Material.Rock, world)
-
--- Cover makes projectile battles more interesting.
-local coverPositions = {
-	Vector3.new(-42, 7, -250),
-	Vector3.new(42, 7, -250),
-	Vector3.new(0, 7, -207),
-	Vector3.new(0, 7, -293),
-}
-for index, position in coverPositions do
-	makePart(
-		"Cover" .. index,
-		Vector3.new(14, 14, 14),
-		CFrame.new(position) * CFrame.Angles(0, math.rad(45), 0),
-		Color3.fromRGB(61, 67, 83),
-		Enum.Material.Slate,
-		world
-	)
-end
-
-local spawnPoints = Instance.new("Folder")
-spawnPoints.Name = "BattleSpawnPoints"
-spawnPoints.Parent = world
-
-local spawnPositions = {
-	Vector3.new(-78, 3, -328),
-	Vector3.new(0, 3, -330),
-	Vector3.new(78, 3, -328),
-	Vector3.new(-80, 3, -250),
-	Vector3.new(80, 3, -250),
-	Vector3.new(-78, 3, -172),
-	Vector3.new(0, 3, -170),
-	Vector3.new(78, 3, -172),
-}
-
-for index, position in spawnPositions do
-	local marker = makePart(
-		"Spawn" .. index,
-		Vector3.new(6, 1, 6),
-		CFrame.lookAt(position, Vector3.new(0, position.Y, -250)),
-		Color3.fromRGB(255, 255, 255),
-		Enum.Material.SmoothPlastic,
-		spawnPoints
-	)
-	marker.CanCollide = false
-	marker.CanTouch = false
-	marker.CanQuery = false
-	marker.Transparency = 1
+-- The battleground map is supplied separately by the creator.
+-- Put a Model or Folder named "BattleGround" directly under Workspace.
+-- It must contain:
+--   BattleBounds       BasePart covering the playable area
+--   BattleSpawnPoints  Folder containing one or more BasePart spawn markers
+-- Tag a building Model with "DestructibleBuilding", or set its
+-- DestructibleBuilding attribute to true, to make it collapse on a spell hit.
+local battleGround = Workspace:FindFirstChild("BattleGround")
+if not battleGround then
+	warn("BattleGround is not installed yet. Add the provided map under Workspace before testing battles.")
+else
+	local battleBounds = battleGround:FindFirstChild("BattleBounds", true)
+	local battleSpawnPoints = battleGround:FindFirstChild("BattleSpawnPoints", true)
+	if not battleBounds or not battleBounds:IsA("BasePart") then
+		warn("BattleGround needs a BasePart named BattleBounds.")
+	end
+	if not battleSpawnPoints then
+		warn("BattleGround needs a folder named BattleSpawnPoints.")
+	end
 end
