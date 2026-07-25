@@ -1,5 +1,10 @@
 -- Roblox Magic System installer
 -- Studioを停止した状態で View > Command Bar に全体を貼り付けて実行してください。
+--
+-- マップ側の必須構成:
+--   Workspace.BattleGround.BattleBounds (戦闘範囲を覆う透明なBasePart)
+--   崩したい建物のModelには DestructibleBuilding タグ、または同名のBoolean Attribute=true
+-- 魔法の組み合わせと名前はロビー（BattleBoundsの外）で保存し、発動はBattleBounds内だけで許可します。
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerScriptService = game:GetService("ServerScriptService")
 local StarterPlayer = game:GetService("StarterPlayer")
@@ -44,6 +49,7 @@ end
 ensureRemote("CastSpellRequest", "RemoteEvent")
 ensureRemote("SpellFx", "RemoteEvent")
 ensureRemote("GetSpellPreview", "RemoteFunction")
+ensureRemote("SaveCustomSpell", "RemoteFunction")
 
 local SOURCE_1 = [==[
 --!strict
@@ -983,6 +989,7 @@ return StatusService
 local SOURCE_6 = [==[
 --!strict
 
+local CollectionService = game:GetService("CollectionService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
@@ -1006,6 +1013,8 @@ local runtimeFolder: Folder? = nil
 local projectileFolder: Folder? = nil
 local initialized = false
 local activeProjectiles: {any} = {}
+local DESTRUCTIBLE_BUILDING_TAG = "DestructibleBuilding"
+local collapsedBuildings: {[Instance]: boolean} = setmetatable({}, { __mode = "k" }) :: any
 
 local function ensureRuntimeFolders()
 	local runtime: Folder
@@ -1034,6 +1043,96 @@ end
 local function fireAll(kind: string, payload: {[string]: any})
 	if spellFx then
 		spellFx:FireAllClients(kind, payload)
+	end
+end
+
+local function isPointInsidePart(part: BasePart, point: Vector3): boolean
+	local localPoint = part.CFrame:PointToObjectSpace(point)
+	local halfSize = part.Size * 0.5
+	return math.abs(localPoint.X) <= halfSize.X
+		and math.abs(localPoint.Y) <= halfSize.Y
+		and math.abs(localPoint.Z) <= halfSize.Z
+end
+
+local function getBattleBounds(): BasePart?
+	local battleGround = Workspace:FindFirstChild("BattleGround")
+	if not battleGround then
+		return nil
+	end
+	local bounds = battleGround:FindFirstChild("BattleBounds", true)
+	return if bounds and bounds:IsA("BasePart") then bounds else nil
+end
+
+local function isPositionInBattleGround(position: Vector3): boolean
+	local bounds = getBattleBounds()
+	return bounds ~= nil and isPointInsidePart(bounds, position)
+end
+
+local function findDestructibleBuilding(hitPart: Instance?): Instance?
+	local current = hitPart
+	while current and current ~= Workspace do
+		if CollectionService:HasTag(current, DESTRUCTIBLE_BUILDING_TAG)
+			or current:GetAttribute(DESTRUCTIBLE_BUILDING_TAG) == true
+		then
+			return current
+		end
+		current = current.Parent
+	end
+	return nil
+end
+
+local function collapseBuilding(building: Instance, impactPosition: Vector3, power: number)
+	if collapsedBuildings[building] or not isPositionInBattleGround(impactPosition) then
+		return
+	end
+	collapsedBuildings[building] = true
+	building:SetAttribute("CollapsedByMagic", true)
+
+	local parts: {BasePart} = {}
+	if building:IsA("BasePart") then
+		table.insert(parts, building)
+	end
+	for _, descendant in building:GetDescendants() do
+		if descendant:IsA("BasePart") then
+			table.insert(parts, descendant)
+		end
+	end
+
+	local impulseStrength = math.clamp(power * 2.4, 48, 110)
+	for _, part in parts do
+		part.Anchored = false
+		part.CanCollide = true
+		pcall(function()
+			part:SetNetworkOwner(nil)
+		end)
+		local away = part.Position - impactPosition
+		local direction = SharedUtil.SafeUnit(away + Vector3.new(0, 4, 0), Vector3.new(0, 1, 0))
+		part:ApplyImpulse(direction * part.AssemblyMass * impulseStrength)
+	end
+end
+
+local function collapseFromPart(hitPart: Instance?, impactPosition: Vector3, power: number)
+	local building = findDestructibleBuilding(hitPart)
+	if building then
+		collapseBuilding(building, impactPosition, power)
+	end
+end
+
+local function collapseInRadius(position: Vector3, radius: number, power: number)
+	if not isPositionInBattleGround(position) then
+		return
+	end
+	local overlap = OverlapParams.new()
+	overlap.FilterType = Enum.RaycastFilterType.Exclude
+	overlap.FilterDescendantsInstances = if runtimeFolder then { runtimeFolder } else {}
+	overlap.MaxParts = 256
+	local seen: {[Instance]: boolean} = {}
+	for _, part in Workspace:GetPartBoundsInRadius(position, radius, overlap) do
+		local building = findDestructibleBuilding(part)
+		if building and not seen[building] then
+			seen[building] = true
+			collapseBuilding(building, position, power)
+		end
 	end
 end
 
@@ -1076,6 +1175,10 @@ local function canAffect(caster: Player, spec: any, humanoid: Humanoid): boolean
 
 	local model = getTargetModel(humanoid)
 	if not model then
+		return false
+	end
+	local targetRoot = SharedUtil.GetRootPart(model)
+	if not targetRoot or not isPositionInBattleGround(targetRoot.Position) then
 		return false
 	end
 
@@ -1254,6 +1357,7 @@ chainLightning = function(caster: Player, spec: any, firstHumanoid: Humanoid, ba
 end
 
 local function detonate(caster: Player, spec: any, position: Vector3, radius: number, damage: number)
+	collapseInRadius(position, radius, damage)
 	fireAll("Explosion", {
 		Position = position,
 		Radius = radius,
@@ -1416,7 +1520,8 @@ local function updateProjectiles(deltaTime: number)
 end
 
 local function directImpactCallback(caster: Player, spec: any, damage: number)
-	return function(position: Vector3, humanoid: Humanoid?, _model: Model?, _part: Instance): string
+	return function(position: Vector3, humanoid: Humanoid?, _model: Model?, part: Instance): string
+		collapseFromPart(part, position, damage)
 		if not humanoid then
 			return "destroy"
 		end
@@ -1513,6 +1618,7 @@ local function createPersistentArea(caster: Player, spec: any, position: Vector3
 				currentPosition = followRoot.Position
 				zone.CFrame = CFrame.new(currentPosition + Vector3.new(0, 0.2, 0)) * CFrame.Angles(0, 0, math.rad(90))
 			end
+			collapseInRadius(currentPosition, form.Radius, spec.Damage)
 			local targets = SharedUtil.FindHumanoidsInRadius(
 				currentPosition,
 				form.Radius,
@@ -1704,7 +1810,8 @@ local function castProximity(caster: Player, spec: any, context: any)
 		spawnProjectile(caster, spec, context.spawnPosition, context.aimDirection, {
 			Speed = spec.OriginDef.ProjectileSpeed,
 			Lifetime = spec.OriginDef.ProjectileLifetime,
-			OnImpact = function(position: Vector3): string
+			OnImpact = function(position: Vector3, _humanoid: Humanoid?, _model: Model?, part: Instance): string
+				collapseFromPart(part, position, spec.Damage)
 				createTrap(caster, spec, position)
 				return "destroy"
 			end,
@@ -1722,7 +1829,8 @@ local function castPersistent(caster: Player, spec: any, context: any)
 		spawnProjectile(caster, spec, context.spawnPosition, context.aimDirection, {
 			Speed = spec.OriginDef.ProjectileSpeed,
 			Lifetime = spec.OriginDef.ProjectileLifetime,
-			OnImpact = function(position: Vector3): string
+			OnImpact = function(position: Vector3, _humanoid: Humanoid?, _model: Model?, part: Instance): string
+				collapseFromPart(part, position, spec.Damage)
 				createPersistentArea(caster, spec, position)
 				return "destroy"
 			end,
@@ -1761,6 +1869,9 @@ function BehaviorResolver.Cast(
 	if not context then
 		return false, "Character is not ready"
 	end
+	if not isPositionInBattleGround(context.root.Position) then
+		return false, "魔法はバトルグラウンド内でのみ使えます"
+	end
 
 	if spec.Origin == "Ground" then
 		fireAll("GroundRise", {
@@ -1794,6 +1905,8 @@ local SOURCE_7 = [==[
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+local TextService = game:GetService("TextService")
 local Workspace = game:GetService("Workspace")
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
@@ -1857,6 +1970,7 @@ local remotes = ensureFolder(ReplicatedStorage, "Remotes")
 local castSpellRequest = ensureRemote(remotes, "CastSpellRequest", "RemoteEvent") :: RemoteEvent
 local spellFx = ensureRemote(remotes, "SpellFx", "RemoteEvent") :: RemoteEvent
 local getSpellPreview = ensureRemote(remotes, "GetSpellPreview", "RemoteFunction") :: RemoteFunction
+local saveCustomSpell = ensureRemote(remotes, "SaveCustomSpell", "RemoteFunction") :: RemoteFunction
 
 type RateState = {
 	tokens: number,
@@ -1933,6 +2047,33 @@ local function getCharacterOrigin(player: Player): (Model?, Humanoid?, BasePart?
 	return character, humanoid, root
 end
 
+local function isPointInsidePart(part: BasePart, point: Vector3): boolean
+	local localPoint = part.CFrame:PointToObjectSpace(point)
+	local halfSize = part.Size * 0.5
+	return math.abs(localPoint.X) <= halfSize.X
+		and math.abs(localPoint.Y) <= halfSize.Y
+		and math.abs(localPoint.Z) <= halfSize.Z
+end
+
+local function getBattleBounds(): BasePart?
+	local battleGround = Workspace:FindFirstChild("BattleGround")
+	if not battleGround then
+		return nil
+	end
+	local bounds = battleGround:FindFirstChild("BattleBounds", true)
+	return if bounds and bounds:IsA("BasePart") then bounds else nil
+end
+
+local function isPlayerInsideBattleGround(player: Player): boolean
+	local _, humanoid, root = getCharacterOrigin(player)
+	local bounds = getBattleBounds()
+	return humanoid ~= nil
+		and humanoid.Health > 0
+		and root ~= nil
+		and bounds ~= nil
+		and isPointInsidePart(bounds, root.Position)
+end
+
 local function sanitizeAim(player: Player, spec: any, payload: any): (Vector3?, Vector3?, string?)
 	local character, humanoid, root = getCharacterOrigin(player)
 	if not character or not humanoid or humanoid.Health <= 0 or not root then
@@ -1988,6 +2129,65 @@ local function parseSpec(payload: any): (any?, string?)
 	end
 
 	return spec, nil
+end
+
+local function getSavedSpec(player: Player): any?
+	return SpellDefs.Build(
+		player:GetAttribute("CustomSpellElement"),
+		player:GetAttribute("CustomSpellOrigin"),
+		player:GetAttribute("CustomSpellForm")
+	)
+end
+
+local function cleanSpellName(player: Player, value: any): (string?, string?)
+	if typeof(value) ~= "string" then
+		return nil, "魔法名を入力してください"
+	end
+	local cleaned = value:gsub("[%c]", ""):match("^%s*(.-)%s*$") or ""
+	local length = utf8.len(cleaned)
+	if not length or length < 1 or length > 24 then
+		return nil, "魔法名は1〜24文字にしてください"
+	end
+
+	local ok, filtered = pcall(function()
+		local result = TextService:FilterStringAsync(cleaned, player.UserId)
+		return result:GetNonChatStringForBroadcastAsync()
+	end)
+	if ok and typeof(filtered) == "string" and filtered ~= "" then
+		return filtered, nil
+	end
+	if RunService:IsStudio() then
+		return cleaned, nil
+	end
+	return nil, "魔法名を安全に確認できませんでした"
+end
+
+local function handleSaveCustomSpell(player: Player, payload: any): any
+	if isPlayerInsideBattleGround(player) then
+		return { Ok = false, Reason = "魔法の作成・変更はロビーで行ってください" }
+	end
+	if typeof(payload) ~= "table" then
+		return { Ok = false, Reason = "保存データが正しくありません" }
+	end
+
+	local spec, specError = parseSpec(payload)
+	if not spec then
+		return { Ok = false, Reason = specError or "魔法を構築できません" }
+	end
+	local filteredName, nameError = cleanSpellName(player, payload.Name)
+	if not filteredName then
+		return { Ok = false, Reason = nameError or "魔法名を保存できません" }
+	end
+
+	player:SetAttribute("CustomSpellName", filteredName)
+	player:SetAttribute("CustomSpellElement", spec.Element)
+	player:SetAttribute("CustomSpellOrigin", spec.Origin)
+	player:SetAttribute("CustomSpellForm", spec.Form)
+
+	local preview = SpellDefs.ToPreview(spec)
+	preview.Ok = true
+	preview.Name = filteredName
+	return preview
 end
 
 local function getCooldownRemaining(state: PlayerState, specKey: string): number
@@ -2067,9 +2267,14 @@ local function handleCastRequest(player: Player, payload: any)
 		return
 	end
 
-	local spec, parseError = parseSpec(payload)
+	if not isPlayerInsideBattleGround(player) then
+		reject(player, "魔法はバトルグラウンド内でのみ使えます")
+		return
+	end
+
+	local spec = getSavedSpec(player)
 	if not spec then
-		reject(player, parseError or "魔法を構築できません")
+		reject(player, "ロビーでオリジナル魔法を作成してください")
 		return
 	end
 
@@ -2128,7 +2333,7 @@ local function handleCastRequest(player: Player, payload: any)
 		Cooldown = spec.Cooldown,
 		Mana = remainingMana,
 		ManaCost = spec.ManaCost,
-		DisplayName = spec.DisplayName,
+		DisplayName = player:GetAttribute("CustomSpellName") or spec.DisplayName,
 		Color = spec.ElementDef.Color,
 	})
 end
@@ -2136,9 +2341,14 @@ end
 ManaService.Start()
 BehaviorResolver.Init(spellFx)
 
+if not getBattleBounds() then
+	warn("[Magic] Workspace.BattleGround.BattleBounds がありません。用意したマップに戦闘範囲を追加してください。")
+end
+
 Players.PlayerAdded:Connect(handlePlayerAdded)
 Players.PlayerRemoving:Connect(handlePlayerRemoving)
 getSpellPreview.OnServerInvoke = handlePreviewRequest
+saveCustomSpell.OnServerInvoke = handleSaveCustomSpell
 castSpellRequest.OnServerEvent:Connect(handleCastRequest)
 
 for _, player in Players:GetPlayers() do
@@ -2260,6 +2470,7 @@ local Remotes = ReplicatedStorage:WaitForChild("Remotes")
 local CastSpellRequest = Remotes:WaitForChild("CastSpellRequest") :: RemoteEvent
 local SpellFx = Remotes:WaitForChild("SpellFx") :: RemoteEvent
 local GetSpellPreview = Remotes:WaitForChild("GetSpellPreview") :: RemoteFunction
+local SaveCustomSpell = Remotes:WaitForChild("SaveCustomSpell") :: RemoteFunction
 
 local selectedElementIndex = 1
 local selectedOriginIndex = 1
@@ -2302,7 +2513,7 @@ local panel = Instance.new("Frame")
 panel.Name = "SpellPanel"
 panel.AnchorPoint = Vector2.new(0.5, 1)
 panel.Position = UDim2.new(0.5, 0, 1, -24)
-panel.Size = UDim2.new(0.94, 0, 0, 158)
+panel.Size = UDim2.new(0.94, 0, 0, 210)
 panel.BackgroundColor3 = Color3.fromRGB(20, 22, 38)
 panel.BackgroundTransparency = 0.08
 panel.Parent = gui
@@ -2310,8 +2521,8 @@ addCorner(panel, 16)
 addStroke(panel, 2, 0.55)
 
 local sizeConstraint = Instance.new("UISizeConstraint")
-sizeConstraint.MinSize = Vector2.new(350, 145)
-sizeConstraint.MaxSize = Vector2.new(720, 170)
+sizeConstraint.MinSize = Vector2.new(350, 200)
+sizeConstraint.MaxSize = Vector2.new(720, 220)
 sizeConstraint.Parent = panel
 
 local title = Instance.new("TextLabel")
@@ -2356,6 +2567,37 @@ local elementButton = makeSelectorButton()
 local originButton = makeSelectorButton()
 local formButton = makeSelectorButton()
 
+local nameBox = Instance.new("TextBox")
+nameBox.Name = "OriginalMagicName"
+nameBox.Position = UDim2.fromOffset(16, 100)
+nameBox.Size = UDim2.new(1, -142, 0, 46)
+nameBox.BackgroundColor3 = Color3.fromRGB(34, 37, 58)
+nameBox.ClearTextOnFocus = false
+nameBox.Font = Enum.Font.GothamMedium
+nameBox.PlaceholderText = "オリジナル魔法の名前（1〜24文字）"
+nameBox.Text = player:GetAttribute("CustomSpellName") or ""
+nameBox.TextColor3 = Color3.fromRGB(255, 255, 255)
+nameBox.PlaceholderColor3 = Color3.fromRGB(154, 160, 190)
+nameBox.TextSize = 16
+nameBox.Parent = panel
+addCorner(nameBox, 10)
+addStroke(nameBox, 1, 0.72)
+
+local saveButton = Instance.new("TextButton")
+saveButton.Name = "SaveCustomSpell"
+saveButton.AnchorPoint = Vector2.new(1, 0)
+saveButton.Position = UDim2.new(1, -16, 0, 100)
+saveButton.Size = UDim2.fromOffset(110, 46)
+saveButton.BackgroundColor3 = Color3.fromRGB(112, 224, 164)
+saveButton.Font = Enum.Font.GothamBold
+saveButton.Text = "名前を付けて保存"
+saveButton.TextColor3 = Color3.fromRGB(18, 32, 26)
+saveButton.TextSize = 13
+saveButton.TextWrapped = true
+saveButton.Parent = panel
+addCorner(saveButton, 10)
+addStroke(saveButton, 1, 0.5)
+
 local castButton = Instance.new("TextButton")
 castButton.Name = "CastButton"
 castButton.AnchorPoint = Vector2.new(1, 0)
@@ -2371,7 +2613,7 @@ addCorner(castButton, 12)
 addStroke(castButton, 2, 0.35)
 
 local manaBack = Instance.new("Frame")
-manaBack.Position = UDim2.fromOffset(16, 105)
+manaBack.Position = UDim2.fromOffset(16, 156)
 manaBack.Size = UDim2.new(1, -32, 0, 24)
 manaBack.BackgroundColor3 = Color3.fromRGB(10, 12, 24)
 manaBack.Parent = panel
@@ -2395,7 +2637,7 @@ manaText.Parent = manaBack
 
 local infoText = Instance.new("TextLabel")
 infoText.BackgroundTransparency = 1
-infoText.Position = UDim2.fromOffset(18, 132)
+infoText.Position = UDim2.fromOffset(18, 183)
 infoText.Size = UDim2.new(1, -36, 0, 20)
 infoText.Font = Enum.Font.GothamMedium
 infoText.TextColor3 = Color3.fromRGB(194, 200, 224)
@@ -2438,6 +2680,47 @@ toastConstraint.Parent = toast
 
 local function currentSelection(): (string, string, string)
 	return ElementOrder[selectedElementIndex], OriginOrder[selectedOriginIndex], FormOrder[selectedFormIndex]
+end
+
+local function findIndex(values: {string}, wanted: any): number?
+	if typeof(wanted) ~= "string" then
+		return nil
+	end
+	for index, value in values do
+		if value == wanted then
+			return index
+		end
+	end
+	return nil
+end
+
+local function syncSavedSelection()
+	selectedElementIndex = findIndex(ElementOrder, player:GetAttribute("CustomSpellElement")) or selectedElementIndex
+	selectedOriginIndex = findIndex(OriginOrder, player:GetAttribute("CustomSpellOrigin")) or selectedOriginIndex
+	selectedFormIndex = findIndex(FormOrder, player:GetAttribute("CustomSpellForm")) or selectedFormIndex
+	local savedName = player:GetAttribute("CustomSpellName")
+	if typeof(savedName) == "string" and savedName ~= "" then
+		nameBox.Text = savedName
+	end
+end
+
+local function isPointInsidePart(part: BasePart, point: Vector3): boolean
+	local localPoint = part.CFrame:PointToObjectSpace(point)
+	local halfSize = part.Size * 0.5
+	return math.abs(localPoint.X) <= halfSize.X
+		and math.abs(localPoint.Y) <= halfSize.Y
+		and math.abs(localPoint.Z) <= halfSize.Z
+end
+
+local function isPlayerInBattleGround(): boolean
+	local battleGround = Workspace:FindFirstChild("BattleGround")
+	local bounds = if battleGround then battleGround:FindFirstChild("BattleBounds", true) else nil
+	local character = player.Character
+	local root = if character then SharedUtil.GetRootPart(character) else nil
+	return bounds ~= nil
+		and bounds:IsA("BasePart")
+		and root ~= nil
+		and isPointInsidePart(bounds, root.Position)
 end
 
 local function spellKey(elementId: string, originId: string, formId: string): string
@@ -2502,6 +2785,28 @@ local function updateSelectionLabels()
 	castButton.BackgroundColor3 = element.Color
 end
 
+local function updateMode()
+	local inBattle = isPlayerInBattleGround()
+	local savedName = player:GetAttribute("CustomSpellName")
+	local hasSavedSpell = typeof(savedName) == "string" and savedName ~= ""
+
+	elementButton.Active = not inBattle
+	originButton.Active = not inBattle
+	formButton.Active = not inBattle
+	elementButton.AutoButtonColor = not inBattle
+	originButton.AutoButtonColor = not inBattle
+	formButton.AutoButtonColor = not inBattle
+	nameBox.Visible = not inBattle
+	saveButton.Visible = not inBattle
+	castButton.Visible = inBattle
+
+	if inBattle then
+		title.Text = if hasSavedSpell then "ORIGINAL MAGIC: " .. savedName else "ORIGINAL MAGIC: 未作成"
+	else
+		title.Text = "LOBBY MAGIC FORGE"
+	end
+end
+
 local function requestPreview()
 	previewGeneration += 1
 	local generation = previewGeneration
@@ -2550,16 +2855,19 @@ local function selectionChanged()
 end
 
 local function cycleElement()
+	if isPlayerInBattleGround() then return end
 	selectedElementIndex = selectedElementIndex % #ElementOrder + 1
 	selectionChanged()
 end
 
 local function cycleOrigin()
+	if isPlayerInBattleGround() then return end
 	selectedOriginIndex = selectedOriginIndex % #OriginOrder + 1
 	selectionChanged()
 end
 
 local function cycleForm()
+	if isPlayerInBattleGround() then return end
 	selectedFormIndex = selectedFormIndex % #FormOrder + 1
 	selectionChanged()
 end
@@ -2567,6 +2875,32 @@ end
 elementButton.Activated:Connect(cycleElement)
 originButton.Activated:Connect(cycleOrigin)
 formButton.Activated:Connect(cycleForm)
+
+local function saveOriginalSpell()
+	if isPlayerInBattleGround() then
+		showToast("魔法の作成・変更はロビーで行ってください", Color3.fromRGB(255, 214, 120))
+		return
+	end
+	local elementId, originId, formId = currentSelection()
+	local ok, result = pcall(function()
+		return SaveCustomSpell:InvokeServer({
+			Name = nameBox.Text,
+			Element = elementId,
+			Origin = originId,
+			Form = formId,
+		})
+	end)
+	if not ok or typeof(result) ~= "table" or result.Ok ~= true then
+		local reason = if ok and typeof(result) == "table" then result.Reason else "保存に失敗しました"
+		showToast(reason or "保存に失敗しました", Color3.fromRGB(255, 135, 135))
+		return
+	end
+	nameBox.Text = result.Name
+	showToast("オリジナル魔法「" .. result.Name .. "」を保存しました", Color3.fromRGB(155, 255, 196))
+	updateMode()
+end
+
+saveButton.Activated:Connect(saveOriginalSpell)
 
 local function getAim(): (Vector3, Vector3)
 	camera = Workspace.CurrentCamera
@@ -2605,11 +2939,21 @@ local function getAim(): (Vector3, Vector3)
 end
 
 local function castSpell()
+	if not isPlayerInBattleGround() then
+		showToast("魔法はバトルグラウンド内でのみ使えます", Color3.fromRGB(255, 214, 120))
+		return
+	end
+	if typeof(player:GetAttribute("CustomSpellName")) ~= "string" then
+		showToast("ロビーでオリジナル魔法を作成してください", Color3.fromRGB(255, 135, 135))
+		return
+	end
 	local now = os.clock()
 	if now < pendingUntil then
 		return
 	end
-	local elementId, originId, formId = currentSelection()
+	local elementId = player:GetAttribute("CustomSpellElement") or ElementOrder[selectedElementIndex]
+	local originId = player:GetAttribute("CustomSpellOrigin") or OriginOrder[selectedOriginIndex]
+	local formId = player:GetAttribute("CustomSpellForm") or FormOrder[selectedFormIndex]
 	local key = spellKey(elementId, originId, formId)
 	local readyAt = cooldownsByKey[key] or 0
 	if now < readyAt then
@@ -2628,9 +2972,6 @@ local function castSpell()
 	local aimPosition, aimDirection = getAim()
 	pendingUntil = now + 0.16
 	CastSpellRequest:FireServer({
-		Element = elementId,
-		Origin = originId,
-		Form = formId,
 		AimPosition = aimPosition,
 		AimDirection = aimDirection,
 	})
@@ -2772,9 +3113,24 @@ end)
 
 player:GetAttributeChangedSignal("Mana"):Connect(updateMana)
 player:GetAttributeChangedSignal("MaxMana"):Connect(updateMana)
+for _, attributeName in {"CustomSpellName", "CustomSpellElement", "CustomSpellOrigin", "CustomSpellForm"} do
+	player:GetAttributeChangedSignal(attributeName):Connect(function()
+		syncSavedSelection()
+		updateSelectionLabels()
+		updateMode()
+	end)
+end
 
-RunService.RenderStepped:Connect(function()
-	local elementId, originId, formId = currentSelection()
+local modeAccumulator = 0
+RunService.RenderStepped:Connect(function(deltaTime)
+	modeAccumulator += deltaTime
+	if modeAccumulator >= 0.12 then
+		modeAccumulator = 0
+		updateMode()
+	end
+	local elementId = player:GetAttribute("CustomSpellElement") or ElementOrder[selectedElementIndex]
+	local originId = player:GetAttribute("CustomSpellOrigin") or OriginOrder[selectedOriginIndex]
+	local formId = player:GetAttribute("CustomSpellForm") or FormOrder[selectedFormIndex]
 	local remaining = (cooldownsByKey[spellKey(elementId, originId, formId)] or 0) - os.clock()
 	if remaining > 0 then
 		cooldownText.Visible = true
@@ -2786,8 +3142,10 @@ RunService.RenderStepped:Connect(function()
 	end
 end)
 
+syncSavedSelection()
 updateSelectionLabels()
 updateMana()
+updateMode()
 requestPreview()
 ]==]
 
