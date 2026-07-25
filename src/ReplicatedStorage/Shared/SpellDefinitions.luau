@@ -32,6 +32,7 @@ export type SpellDefinition = {
 	BlastRadius: number,
 	SlowDuration: number,
 	Color: Color3,
+	CanDestroyBuildings: boolean,
 }
 
 local elements: { [string]: ElementDefinition } = {
@@ -116,6 +117,7 @@ local function buildSpell(name: string, elementId: string, styleId: string): Spe
 		BlastRadius = style.BlastRadius + element.BlastBonus,
 		SlowDuration = element.SlowDuration,
 		Color = element.Color,
+		CanDestroyBuildings = true,
 	}
 end
 
