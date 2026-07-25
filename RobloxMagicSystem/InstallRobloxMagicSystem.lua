@@ -4,7 +4,10 @@
 -- マップ側の必須構成:
 --   Workspace.BattleGround.BattleBounds (戦闘範囲を覆う透明なBasePart)
 --   崩したい建物のModelには DestructibleBuilding タグ、または同名のBoolean Attribute=true
--- 魔法の組み合わせと名前はロビー（BattleBoundsの外）で保存し、発動はBattleBounds内だけで許可します。
+-- ロビーでは「魔力 / 物質 × 属性 × 専用の出し方 × 形」を選び、名前を付けて保存します。
+-- 魔力系には短時間の煙と範囲効果を出す「状態」があり、物質系は壊せる防壁を生成します。
+-- 建物崩壊時は当たり判定を無効化して圧力を加え、物質は破壊時・寿命終了時とも当たり判定を先に消してフェードします。
+-- 発動はBattleBounds内だけで許可します。
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerScriptService = game:GetService("ServerScriptService")
 local StarterPlayer = game:GetService("StarterPlayer")
@@ -115,9 +118,10 @@ local Elements: {[string]: any} = {
 		ManaModifier = 1,
 		CooldownModifier = -0.05,
 		Knockback = {
-			HorizontalImpulse = 48,
-			UpwardImpulse = 17,
+			HorizontalImpulse = 96,
+			UpwardImpulse = 34,
 		},
+		StateSpeedMultiplier = 1.45,
 	},
 
 	Poison = {
@@ -175,10 +179,18 @@ local SOURCE_2 = [==[
 --!strict
 
 -- SpellDefs
--- 「属性 × 出し方 × 攻撃形態」から、サーバーが使用する最終スペル定義を構築します。
+-- 「系統 × 属性 × 出し方 × 形」から、サーバーが使用する最終定義を構築します。
+-- 魔力系と物質系で、出し方・形の選択肢を分離します。
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ElementDefs = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("ElementDefs"))
+
+local Kinds: {[string]: any} = {
+	Magic = { Id = "Magic", DisplayName = "魔力" },
+	Material = { Id = "Material", DisplayName = "物質" },
+}
+
+local KindOrder = { "Magic", "Material" }
 
 local Origins: {[string]: any} = {
 	Throw = {
@@ -219,6 +231,16 @@ local Origins: {[string]: any} = {
 		CooldownModifier = 0.12,
 		CastRange = 82,
 	},
+	State = {
+		Id = "State",
+		DisplayName = "状態",
+		ManaModifier = 5,
+		CooldownModifier = 0.40,
+		CastRange = 0,
+		StateRadius = 12,
+		StateDuration = 4.5,
+		TickInterval = 0.70,
+	},
 }
 
 local OriginOrder = {
@@ -227,6 +249,7 @@ local OriginOrder = {
 	"Self",
 	"Air",
 	"Ground",
+	"State",
 }
 
 local Forms: {[string]: any} = {
@@ -292,6 +315,66 @@ local FormOrder = {
 	"Persistent",
 }
 
+local MaterialOrigins: {[string]: any} = {
+	Front = {
+		Id = "Front",
+		DisplayName = "前方に出す",
+		ManaModifier = 0,
+		CooldownModifier = 0,
+		CastRange = 18,
+	},
+	Aim = {
+		Id = "Aim",
+		DisplayName = "照準地点に出す",
+		ManaModifier = 5,
+		CooldownModifier = 0.35,
+		CastRange = 58,
+	},
+	Surround = {
+		Id = "Surround",
+		DisplayName = "自分の周囲に出す",
+		ManaModifier = 7,
+		CooldownModifier = 0.55,
+		CastRange = 0,
+	},
+}
+
+local MaterialOriginOrder = { "Front", "Aim", "Surround" }
+
+local MaterialForms: {[string]: any} = {
+	Wall = {
+		Id = "Wall",
+		DisplayName = "防壁",
+		ManaCost = 22,
+		Cooldown = 3.0,
+		Health = 150,
+		Lifetime = 12,
+		Size = Vector3.new(16, 10, 1.6),
+	},
+	WideWall = {
+		Id = "WideWall",
+		DisplayName = "広域防壁",
+		ManaCost = 30,
+		Cooldown = 4.2,
+		Health = 220,
+		Lifetime = 10,
+		Size = Vector3.new(28, 9, 1.8),
+	},
+	Dome = {
+		Id = "Dome",
+		DisplayName = "ドーム防壁",
+		ManaCost = 38,
+		Cooldown = 5.4,
+		Health = 300,
+		Lifetime = 9,
+		Radius = 9,
+		Height = 8,
+		Segments = 10,
+	},
+}
+
+local MaterialFormOrder = { "Wall", "WideWall", "Dome" }
+
 local SpellDefs = {}
 
 SpellDefs.Mana = table.freeze({
@@ -311,43 +394,74 @@ SpellDefs.Security = table.freeze({
 	MaxTargetsPerArea = 32,
 })
 
+SpellDefs.Kinds = Kinds
+SpellDefs.KindOrder = KindOrder
 SpellDefs.Origins = Origins
 SpellDefs.OriginOrder = OriginOrder
 SpellDefs.Forms = Forms
 SpellDefs.FormOrder = FormOrder
+SpellDefs.MaterialOrigins = MaterialOrigins
+SpellDefs.MaterialOriginOrder = MaterialOriginOrder
+SpellDefs.MaterialForms = MaterialForms
+SpellDefs.MaterialFormOrder = MaterialFormOrder
 
-function SpellDefs.IsValidOrigin(originId: any): boolean
-	return typeof(originId) == "string" and Origins[originId] ~= nil
-end
-
-function SpellDefs.IsValidForm(formId: any): boolean
-	return typeof(formId) == "string" and Forms[formId] ~= nil
-end
-
-function SpellDefs.Build(elementId: any, originId: any, formId: any): any?
-	if not ElementDefs.IsValid(elementId) then
-		return nil
-	end
-	if not SpellDefs.IsValidOrigin(originId) then
-		return nil
-	end
-	if not SpellDefs.IsValidForm(formId) then
+function SpellDefs.Build(elementId: any, originId: any, formId: any, kindId: any?): any?
+	local kind = if typeof(kindId) == "string" then kindId else "Magic"
+	if not ElementDefs.IsValid(elementId) or Kinds[kind] == nil then
 		return nil
 	end
 
 	local element = ElementDefs.Get(elementId)
+	if not element then
+		return nil
+	end
+
+	if kind == "Material" then
+		local origin = MaterialOrigins[originId]
+		local form = MaterialForms[formId]
+		if not origin or not form then
+			return nil
+		end
+		local manaCost = math.max(1, math.floor(form.ManaCost + origin.ManaModifier + element.ManaModifier + 0.5))
+		local cooldown = math.max(0.25, form.Cooldown + origin.CooldownModifier + element.CooldownModifier)
+		return {
+			Key = string.format("%s|%s|%s|%s", kind, elementId, originId, formId),
+			Kind = kind,
+			Element = elementId,
+			Origin = originId,
+			Form = formId,
+			ElementDef = element,
+			OriginDef = origin,
+			FormDef = form,
+			ManaCost = manaCost,
+			Cooldown = cooldown,
+			Damage = 0,
+			Health = form.Health,
+			Lifetime = form.Lifetime,
+			DisplayName = string.format("%s × %s × %s × %s", Kinds[kind].DisplayName, element.DisplayName, origin.DisplayName, form.DisplayName),
+		}
+	end
+
 	local origin = Origins[originId]
 	local form = Forms[formId]
-	if not element or not origin or not form then
+	if not origin or not form then
 		return nil
 	end
 
 	local manaCost = math.max(1, math.floor(form.ManaCost + origin.ManaModifier + element.ManaModifier + 0.5))
 	local cooldown = math.max(0.25, form.Cooldown + origin.CooldownModifier + element.CooldownModifier)
 	local damage = math.max(1, form.Damage * element.DamageMultiplier)
+	local stateRadius = origin.StateRadius or form.Radius or form.ExplosionRadius or 11
+	local stateDuration = origin.StateDuration or form.Duration or math.clamp(form.Cooldown + 2.5, 3.5, 6)
+
+	if originId == "State" then
+		damage = math.max(1, damage * 0.25)
+		cooldown = math.max(cooldown, stateDuration + 1.2)
+	end
 
 	return {
-		Key = string.format("%s|%s|%s", elementId, originId, formId),
+		Key = string.format("%s|%s|%s|%s", kind, elementId, originId, formId),
+		Kind = kind,
 		Element = elementId,
 		Origin = originId,
 		Form = formId,
@@ -357,13 +471,16 @@ function SpellDefs.Build(elementId: any, originId: any, formId: any): any?
 		ManaCost = manaCost,
 		Cooldown = cooldown,
 		Damage = damage,
-		DisplayName = string.format("%s × %s × %s", element.DisplayName, origin.DisplayName, form.DisplayName),
+		StateRadius = stateRadius,
+		StateDuration = stateDuration,
+		DisplayName = string.format("%s × %s × %s × %s", Kinds[kind].DisplayName, element.DisplayName, origin.DisplayName, form.DisplayName),
 	}
 end
 
 function SpellDefs.ToPreview(spec: any): {[string]: any}
 	return {
 		Key = spec.Key,
+		Kind = spec.Kind,
 		Element = spec.Element,
 		Origin = spec.Origin,
 		Form = spec.Form,
@@ -371,6 +488,8 @@ function SpellDefs.ToPreview(spec: any): {[string]: any}
 		ManaCost = spec.ManaCost,
 		Cooldown = spec.Cooldown,
 		Damage = spec.Damage,
+		Health = spec.Health,
+		Lifetime = spec.Lifetime,
 		Color = spec.ElementDef.Color,
 	}
 end
@@ -990,9 +1109,11 @@ local SOURCE_6 = [==[
 --!strict
 
 local CollectionService = game:GetService("CollectionService")
+local Debris = game:GetService("Debris")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
 local Workspace = game:GetService("Workspace")
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
@@ -1011,6 +1132,7 @@ local BehaviorResolver = {}
 local spellFx: RemoteEvent? = nil
 local runtimeFolder: Folder? = nil
 local projectileFolder: Folder? = nil
+local materialFolder: Folder? = nil
 local initialized = false
 local activeProjectiles: {any} = {}
 local DESTRUCTIBLE_BUILDING_TAG = "DestructibleBuilding"
@@ -1038,6 +1160,17 @@ local function ensureRuntimeFolders()
 		projectiles.Parent = runtime
 	end
 	projectileFolder = projectiles
+
+	local materials: Folder
+	local existingMaterials = runtime:FindFirstChild("Materials")
+	if existingMaterials and existingMaterials:IsA("Folder") then
+		materials = existingMaterials
+	else
+		materials = Instance.new("Folder")
+		materials.Name = "Materials"
+		materials.Parent = runtime
+	end
+	materialFolder = materials
 end
 
 local function fireAll(kind: string, payload: {[string]: any})
@@ -1081,6 +1214,68 @@ local function findDestructibleBuilding(hitPart: Instance?): Instance?
 	return nil
 end
 
+local function findMagicMaterial(hitPart: Instance?): Model?
+	local current = hitPart
+	while current and current ~= Workspace do
+		if current:IsA("Model") and current:GetAttribute("MagicMaterial") == true then
+			return current
+		end
+		current = current.Parent
+	end
+	return nil
+end
+
+local function getModelParts(model: Instance): {BasePart}
+	local parts: {BasePart} = {}
+	if model:IsA("BasePart") then
+		table.insert(parts, model)
+	end
+	for _, descendant in model:GetDescendants() do
+		if descendant:IsA("BasePart") then
+			table.insert(parts, descendant)
+		end
+	end
+	return parts
+end
+
+local function fadeMaterial(material: Model, duration: number)
+	if material:GetAttribute("Fading") == true then
+		return
+	end
+	material:SetAttribute("Fading", true)
+	local parts = getModelParts(material)
+	for _, part in parts do
+		part.CanCollide = false
+		part.CanTouch = false
+		part.CanQuery = false
+		TweenService:Create(
+			part,
+			TweenInfo.new(duration, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+			{ Transparency = 1 }
+		):Play()
+	end
+	task.delay(duration, function()
+		if material.Parent then
+			material:Destroy()
+		end
+	end)
+end
+
+local function damageMagicMaterial(material: Model, damage: number)
+	if material:GetAttribute("Fading") == true then
+		return
+	end
+	local health = material:GetAttribute("MagicMaterialHealth")
+	if typeof(health) ~= "number" then
+		health = 100
+	end
+	health -= math.max(1, damage)
+	material:SetAttribute("MagicMaterialHealth", health)
+	if health <= 0 then
+		fadeMaterial(material, 0.8)
+	end
+end
+
 local function collapseBuilding(building: Instance, impactPosition: Vector3, power: number)
 	if collapsedBuildings[building] or not isPositionInBattleGround(impactPosition) then
 		return
@@ -1088,30 +1283,45 @@ local function collapseBuilding(building: Instance, impactPosition: Vector3, pow
 	collapsedBuildings[building] = true
 	building:SetAttribute("CollapsedByMagic", true)
 
-	local parts: {BasePart} = {}
-	if building:IsA("BasePart") then
-		table.insert(parts, building)
-	end
-	for _, descendant in building:GetDescendants() do
-		if descendant:IsA("BasePart") then
-			table.insert(parts, descendant)
-		end
-	end
-
-	local impulseStrength = math.clamp(power * 2.4, 48, 110)
+	local parts = getModelParts(building)
+	local pressureStrength = math.clamp(power * 3.2, 70, 150)
 	for _, part in parts do
 		part.Anchored = false
-		part.CanCollide = true
+		part.CanCollide = false
+		part.CanTouch = false
+		part.CanQuery = false
+		part:BreakJoints()
 		pcall(function()
 			part:SetNetworkOwner(nil)
 		end)
+
 		local away = part.Position - impactPosition
-		local direction = SharedUtil.SafeUnit(away + Vector3.new(0, 4, 0), Vector3.new(0, 1, 0))
-		part:ApplyImpulse(direction * part.AssemblyMass * impulseStrength)
+		local direction = SharedUtil.SafeUnit(away + Vector3.new(0, 5, 0), Vector3.new(0, 1, 0))
+		part:ApplyImpulse(direction * part.AssemblyMass * pressureStrength)
+
+		local attachment = Instance.new("Attachment")
+		attachment.Name = "MagicPressureAttachment"
+		attachment.Parent = part
+		local pressure = Instance.new("VectorForce")
+		pressure.Name = "MagicCollapsePressure"
+		pressure.Attachment0 = attachment
+		pressure.RelativeTo = Enum.ActuatorRelativeTo.World
+		pressure.ApplyAtCenterOfMass = true
+		pressure.Force = direction * part.AssemblyMass * pressureStrength * 5
+		pressure.Parent = part
+		Debris:AddItem(pressure, 0.32)
+		Debris:AddItem(attachment, 0.34)
 	end
 end
 
 local function collapseFromPart(hitPart: Instance?, impactPosition: Vector3, power: number)
+	if not isPositionInBattleGround(impactPosition) then
+		return
+	end
+	local material = findMagicMaterial(hitPart)
+	if material then
+		damageMagicMaterial(material, power)
+	end
 	local building = findDestructibleBuilding(hitPart)
 	if building then
 		collapseBuilding(building, impactPosition, power)
@@ -1124,13 +1334,19 @@ local function collapseInRadius(position: Vector3, radius: number, power: number
 	end
 	local overlap = OverlapParams.new()
 	overlap.FilterType = Enum.RaycastFilterType.Exclude
-	overlap.FilterDescendantsInstances = if runtimeFolder then { runtimeFolder } else {}
+	overlap.FilterDescendantsInstances = if projectileFolder then { projectileFolder } else {}
 	overlap.MaxParts = 256
-	local seen: {[Instance]: boolean} = {}
+	local seenBuildings: {[Instance]: boolean} = {}
+	local seenMaterials: {[Model]: boolean} = {}
 	for _, part in Workspace:GetPartBoundsInRadius(position, radius, overlap) do
+		local material = findMagicMaterial(part)
+		if material and not seenMaterials[material] then
+			seenMaterials[material] = true
+			damageMagicMaterial(material, power)
+		end
 		local building = findDestructibleBuilding(part)
-		if building and not seen[building] then
-			seen[building] = true
+		if building and not seenBuildings[building] then
+			seenBuildings[building] = true
 			collapseBuilding(building, position, power)
 		end
 	end
@@ -1377,8 +1593,8 @@ end
 
 local function makeProjectileRaycastParams(projectile: any): RaycastParams
 	local excludes: {Instance} = {}
-	if runtimeFolder then
-		table.insert(excludes, runtimeFolder)
+	if projectileFolder then
+		table.insert(excludes, projectileFolder)
 	end
 	if projectile.owner.Character then
 		table.insert(excludes, projectile.owner.Character)
@@ -1636,6 +1852,217 @@ local function createPersistentArea(caster: Player, spec: any, position: Vector3
 	end)
 end
 
+local function createStateArea(caster: Player, spec: any, context: any)
+	local radius = spec.StateRadius or 12
+	local duration = spec.StateDuration or 4.5
+	local tickInterval = spec.OriginDef.TickInterval or 0.7
+	local zone = makeMagicPart(
+		"MagicStateArea",
+		context.root.Position,
+		Vector3.new(radius * 2, radius * 2, radius * 2),
+		spec.ElementDef.Color,
+		Enum.PartType.Ball,
+		1
+	)
+	local runtime = runtimeFolder
+	if not runtime then
+		error("Magic runtime folder is not initialized")
+	end
+	zone.Parent = runtime
+
+	local smoke = Instance.new("ParticleEmitter")
+	smoke.Name = "StateSmoke"
+	smoke.Texture = "rbxasset://textures/particles/smoke_main.dds"
+	smoke.Color = ColorSequence.new(spec.ElementDef.Color)
+	smoke.Rate = 7
+	smoke.Lifetime = NumberRange.new(0.8, 1.35)
+	smoke.Speed = NumberRange.new(0.5, 1.6)
+	smoke.SpreadAngle = Vector2.new(180, 180)
+	smoke.Size = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 1.2),
+		NumberSequenceKeypoint.new(1, 3.2),
+	})
+	smoke.Transparency = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 0.72),
+		NumberSequenceKeypoint.new(1, 1),
+	})
+	smoke.Parent = zone
+
+	if spec.Element == "Wind" then
+		local humanoid = context.humanoid
+		local originalWalkSpeed = humanoid.WalkSpeed
+		local boostedWalkSpeed = math.max(originalWalkSpeed + 4, originalWalkSpeed * (spec.ElementDef.StateSpeedMultiplier or 1.4))
+		local boostToken = os.clock()
+		humanoid:SetAttribute("WindStateBoostToken", boostToken)
+		humanoid.WalkSpeed = boostedWalkSpeed
+		task.delay(duration, function()
+			if humanoid.Parent and humanoid:GetAttribute("WindStateBoostToken") == boostToken then
+				humanoid:SetAttribute("WindStateBoostToken", nil)
+				humanoid.WalkSpeed = originalWalkSpeed
+			end
+		end)
+	end
+
+	fireAll("StateArea", {
+		Position = context.root.Position,
+		Radius = radius,
+		Duration = duration,
+		Color = spec.ElementDef.Color,
+	})
+
+	task.spawn(function()
+		local expiresAt = os.clock() + duration
+		while zone.Parent and context.root.Parent and os.clock() < expiresAt do
+			local position = context.root.Position
+			zone.Position = position
+			collapseInRadius(position, radius, math.max(2, spec.Damage * 0.4))
+			local targets = SharedUtil.FindHumanoidsInRadius(
+				position,
+				radius,
+				if runtimeFolder then { runtimeFolder } else {},
+				SpellDefs.Security.MaxTargetsPerArea
+			)
+			for _, humanoid in targets do
+				if humanoid ~= context.humanoid and canAffect(caster, spec, humanoid) then
+					if spec.Element == "Wind" then
+						applyElementStatus(caster, spec, humanoid, position, false)
+					else
+						applyToHumanoid(caster, spec, humanoid, position, spec.Damage, false)
+					end
+				elseif spec.Element == "Light" and humanoid == context.humanoid then
+					applyToHumanoid(caster, spec, humanoid, position, spec.Damage, false)
+				end
+			end
+			task.wait(tickInterval)
+		end
+		smoke.Enabled = false
+		Debris:AddItem(zone, 1.4)
+	end)
+end
+
+local function makeMaterialPart(
+	parent: Model,
+	name: string,
+	size: Vector3,
+	cframe: CFrame,
+	color: Color3
+): Part
+	local part = Instance.new("Part")
+	part.Name = name
+	part.Anchored = true
+	part.CanCollide = true
+	part.CanTouch = true
+	part.CanQuery = true
+	part.CastShadow = true
+	part.Material = Enum.Material.ForceField
+	part.Color = color
+	part.Transparency = 0.18
+	part.Size = size
+	part.CFrame = cframe
+	part.Parent = parent
+	return part
+end
+
+local function createMaterial(
+	caster: Player,
+	spec: any,
+	aimPosition: Vector3,
+	aimDirection: Vector3
+): (boolean, string?)
+	local character = caster.Character
+	local humanoid = if character then character:FindFirstChildOfClass("Humanoid") else nil
+	local root = if character then SharedUtil.GetRootPart(character) else nil
+	if not character or not humanoid or humanoid.Health <= 0 or not root then
+		return false, "Character is not ready"
+	end
+
+	local materials = materialFolder
+	if not materials then
+		return false, "Material folder is not initialized"
+	end
+
+	local horizontal = Vector3.new(aimDirection.X, 0, aimDirection.Z)
+	horizontal = SharedUtil.SafeUnit(horizontal, Vector3.new(root.CFrame.LookVector.X, 0, root.CFrame.LookVector.Z))
+	local groundAtAim = SharedUtil.FindGround(
+		aimPosition,
+		if runtimeFolder then { character, runtimeFolder } else { character }
+	)
+	local basePosition: Vector3
+	if spec.Origin == "Aim" then
+		basePosition = groundAtAim
+	elseif spec.Origin == "Surround" then
+		basePosition = SharedUtil.FindGround(
+			root.Position,
+			if runtimeFolder then { character, runtimeFolder } else { character }
+		)
+	else
+		basePosition = SharedUtil.FindGround(
+			root.Position + horizontal * 10,
+			if runtimeFolder then { character, runtimeFolder } else { character }
+		)
+	end
+
+	local model = Instance.new("Model")
+	model.Name = "MagicMaterial_" .. spec.Form
+	model:SetAttribute("MagicMaterial", true)
+	model:SetAttribute("MagicMaterialHealth", spec.Health)
+	model:SetAttribute("MagicMaterialMaxHealth", spec.Health)
+	model:SetAttribute("MagicMaterialOwner", caster.UserId)
+	model.Parent = materials
+
+	local form = spec.FormDef
+	if spec.Form == "Dome" then
+		local segments = form.Segments
+		local radius = form.Radius
+		local height = form.Height
+		for index = 1, segments do
+			local angle = (index - 1) / segments * math.pi * 2
+			local radial = Vector3.new(math.cos(angle), 0, math.sin(angle))
+			local position = basePosition + radial * radius + Vector3.new(0, height * 0.5, 0)
+			local width = (2 * math.pi * radius / segments) + 0.7
+			makeMaterialPart(
+				model,
+				"DomePanel" .. index,
+				Vector3.new(width, height, 1.25),
+				CFrame.lookAt(position, basePosition + Vector3.new(0, height * 0.5, 0)),
+				spec.ElementDef.Color
+			)
+		end
+	else
+		local size = form.Size
+		local position = basePosition + Vector3.new(0, size.Y * 0.5, 0)
+		if spec.Origin == "Surround" then
+			position += horizontal * 7
+		end
+		makeMaterialPart(
+			model,
+			spec.Form,
+			size,
+			CFrame.lookAt(position, position + horizontal),
+			spec.ElementDef.Color
+		)
+	end
+
+	fireAll("MaterialCreated", {
+		Position = basePosition,
+		Color = spec.ElementDef.Color,
+		Lifetime = spec.Lifetime,
+	})
+	task.delay(spec.Lifetime, function()
+		if model.Parent then
+			fadeMaterial(model, 1.25)
+		end
+	end)
+	return true, nil
+end
+
+local function applyWindLift(context: any)
+	local root = context.root
+	local horizontal = Vector3.new(context.aimDirection.X, 0, context.aimDirection.Z)
+	horizontal = SharedUtil.SafeUnit(horizontal, Vector3.new(root.CFrame.LookVector.X, 0, root.CFrame.LookVector.Z))
+	root:ApplyImpulse((horizontal * 19 + Vector3.new(0, 11, 0)) * root.AssemblyMass)
+end
+
 local function findBestHomingTarget(
 	caster: Player,
 	spec: any,
@@ -1698,7 +2125,7 @@ local function resolveCastContext(
 	if spec.Origin == "Throw" then
 		spawnPosition = headPosition + aimDirection * 3
 		targetPosition = aimPosition
-	elseif spec.Origin == "Self" then
+	elseif spec.Origin == "Self" or spec.Origin == "State" then
 		spawnPosition = root.Position
 		targetPosition = root.Position
 	elseif spec.Origin == "Air" then
@@ -1865,14 +2292,31 @@ function BehaviorResolver.Cast(
 		return false, "BehaviorResolver is not initialized"
 	end
 
+	local character = caster.Character
+	local root = if character then SharedUtil.GetRootPart(character) else nil
+	if not root then
+		return false, "Character is not ready"
+	end
+	if not isPositionInBattleGround(root.Position) then
+		return false, "魔法はバトルグラウンド内でのみ使えます"
+	end
+
+	if spec.Kind == "Material" then
+		return createMaterial(caster, spec, aimPosition, aimDirection)
+	end
+
 	local context = resolveCastContext(caster, spec, aimPosition, aimDirection)
 	if not context then
 		return false, "Character is not ready"
 	end
-	if not isPositionInBattleGround(context.root.Position) then
-		return false, "魔法はバトルグラウンド内でのみ使えます"
-	end
 
+	if spec.Element == "Wind" then
+		applyWindLift(context)
+	end
+	if spec.Origin == "State" then
+		createStateArea(caster, spec, context)
+		return true, nil
+	end
 	if spec.Origin == "Ground" then
 		fireAll("GroundRise", {
 			Position = context.spawnPosition,
@@ -2091,14 +2535,13 @@ local function sanitizeAim(player: Player, spec: any, payload: any): (Vector3?, 
 
 	local originPosition = root.Position + Vector3.new(0, 1.5, 0)
 	local offset = aimPosition - originPosition
-	local maxDistance = SpellDefs.Security.MaxAimDistance
-
-	if spec.Origin ~= "Self" and typeof(spec.OriginDef.CastRange) == "number" then
-		maxDistance = math.min(maxDistance, spec.OriginDef.CastRange)
+	if spec.Origin == "Self" or spec.Origin == "State" or spec.Origin == "Surround" then
+		return root.Position, root.CFrame.LookVector, nil
 	end
 
-	if spec.Origin == "Self" then
-		return root.Position, root.CFrame.LookVector, nil
+	local maxDistance = SpellDefs.Security.MaxAimDistance
+	if typeof(spec.OriginDef.CastRange) == "number" then
+		maxDistance = math.min(maxDistance, spec.OriginDef.CastRange)
 	end
 
 	local fallbackDirection = SharedUtil.SafeUnit(requestedDirection, root.CFrame.LookVector)
@@ -2125,7 +2568,7 @@ local function parseSpec(payload: any): (any?, string?)
 		return nil, "リクエスト形式が正しくありません"
 	end
 
-	local spec = SpellDefs.Build(payload.Element, payload.Origin, payload.Form)
+	local spec = SpellDefs.Build(payload.Element, payload.Origin, payload.Form, payload.Kind)
 	if not spec then
 		return nil, "存在しない魔法の組み合わせです"
 	end
@@ -2137,7 +2580,8 @@ local function getSavedSpec(player: Player): any?
 	return SpellDefs.Build(
 		player:GetAttribute("CustomSpellElement"),
 		player:GetAttribute("CustomSpellOrigin"),
-		player:GetAttribute("CustomSpellForm")
+		player:GetAttribute("CustomSpellForm"),
+		player:GetAttribute("CustomSpellKind")
 	)
 end
 
@@ -2182,6 +2626,7 @@ local function handleSaveCustomSpell(player: Player, payload: any): any
 	end
 
 	player:SetAttribute("CustomSpellName", filteredName)
+	player:SetAttribute("CustomSpellKind", spec.Kind)
 	player:SetAttribute("CustomSpellElement", spec.Element)
 	player:SetAttribute("CustomSpellOrigin", spec.Origin)
 	player:SetAttribute("CustomSpellForm", spec.Form)
@@ -2189,6 +2634,7 @@ local function handleSaveCustomSpell(player: Player, payload: any): any
 	local persisted = pcall(function()
 		customSpellStore:SetAsync(tostring(player.UserId), {
 			Name = filteredName,
+			Kind = spec.Kind,
 			Element = spec.Element,
 			Origin = spec.Origin,
 			Form = spec.Form,
@@ -2219,12 +2665,13 @@ local function handlePlayerAdded(player: Player)
 		if not ok or typeof(saved) ~= "table" then
 			return
 		end
-		local spec = SpellDefs.Build(saved.Element, saved.Origin, saved.Form)
+		local spec = SpellDefs.Build(saved.Element, saved.Origin, saved.Form, saved.Kind)
 		local nameLength = if typeof(saved.Name) == "string" then utf8.len(saved.Name) else nil
 		if not spec or not nameLength or nameLength < 1 or nameLength > 24 then
 			return
 		end
 		player:SetAttribute("CustomSpellName", saved.Name)
+		player:SetAttribute("CustomSpellKind", spec.Kind)
 		player:SetAttribute("CustomSpellElement", spec.Element)
 		player:SetAttribute("CustomSpellOrigin", spec.Origin)
 		player:SetAttribute("CustomSpellForm", spec.Form)
@@ -2362,6 +2809,7 @@ local function handleCastRequest(player: Player, payload: any)
 
 	spellFx:FireClient(player, "CastAccepted", {
 		Key = spec.Key,
+		Kind = spec.Kind,
 		Cooldown = spec.Cooldown,
 		Mana = remainingMana,
 		ManaCost = spec.ManaCost,
@@ -2418,6 +2866,7 @@ local function resolveOrder(candidate: any, fallback: {string}, label: string): 
 	return fallback
 end
 
+local KindOrder = resolveOrder(SpellDefs.KindOrder, { "Magic", "Material" }, "SpellDefs.KindOrder")
 local ElementOrder = resolveOrder(ElementDefs.Order, {
 	"Fire",
 	"Ice",
@@ -2426,15 +2875,14 @@ local ElementOrder = resolveOrder(ElementDefs.Order, {
 	"Poison",
 	"Light",
 }, "ElementDefs.Order")
-
 local OriginOrder = resolveOrder(SpellDefs.OriginOrder, {
 	"Throw",
 	"Place",
 	"Self",
 	"Air",
 	"Ground",
+	"State",
 }, "SpellDefs.OriginOrder")
-
 local FormOrder = resolveOrder(SpellDefs.FormOrder, {
 	"Explosion",
 	"Spread",
@@ -2442,50 +2890,31 @@ local FormOrder = resolveOrder(SpellDefs.FormOrder, {
 	"Proximity",
 	"Persistent",
 }, "SpellDefs.FormOrder")
+local MaterialOriginOrder = resolveOrder(SpellDefs.MaterialOriginOrder, {
+	"Front",
+	"Aim",
+	"Surround",
+}, "SpellDefs.MaterialOriginOrder")
+local MaterialFormOrder = resolveOrder(SpellDefs.MaterialFormOrder, {
+	"Wall",
+	"WideWall",
+	"Dome",
+}, "SpellDefs.MaterialFormOrder")
+
+local KindDefs = SpellDefs.Kinds
+local OriginDefs = SpellDefs.Origins
+local FormDefs = SpellDefs.Forms
+local MaterialOriginDefs = SpellDefs.MaterialOrigins
+local MaterialFormDefs = SpellDefs.MaterialForms
 
 local function getElementDef(elementId: string): any?
 	if typeof(ElementDefs.Get) == "function" then
 		return ElementDefs.Get(elementId)
 	end
-
 	if typeof(ElementDefs.All) == "table" then
 		return ElementDefs.All[elementId]
 	end
-
-	-- 古い定義形式（属性テーブルを直接 return）との互換用です。
 	return ElementDefs[elementId]
-end
-
-local FALLBACK_ORIGINS: {[string]: any} = {
-	Throw = { DisplayName = "投げる" },
-	Place = { DisplayName = "置く" },
-	Self = { DisplayName = "自分から出す" },
-	Air = { DisplayName = "空中に出す" },
-	Ground = { DisplayName = "地面から出す" },
-}
-
-local FALLBACK_FORMS: {[string]: any} = {
-	Explosion = { DisplayName = "爆発" },
-	Spread = { DisplayName = "拡散" },
-	Homing = { DisplayName = "追尾" },
-	Proximity = { DisplayName = "探知攻撃" },
-	Persistent = { DisplayName = "持続範囲" },
-}
-
-local OriginDefs: {[string]: any}
-if typeof(SpellDefs.Origins) == "table" then
-	OriginDefs = SpellDefs.Origins
-else
-	warn("[Magic] SpellDefs.Origins がないため表示用の互換定義を使用します。SpellDefsを最新版へ置き換えてください。")
-	OriginDefs = FALLBACK_ORIGINS
-end
-
-local FormDefs: {[string]: any}
-if typeof(SpellDefs.Forms) == "table" then
-	FormDefs = SpellDefs.Forms
-else
-	warn("[Magic] SpellDefs.Forms がないため表示用の互換定義を使用します。SpellDefsを最新版へ置き換えてください。")
-	FormDefs = FALLBACK_FORMS
 end
 
 local defaultMaxMana = 100
@@ -2504,6 +2933,7 @@ local SpellFx = Remotes:WaitForChild("SpellFx") :: RemoteEvent
 local GetSpellPreview = Remotes:WaitForChild("GetSpellPreview") :: RemoteFunction
 local SaveCustomSpell = Remotes:WaitForChild("SaveCustomSpell") :: RemoteFunction
 
+local selectedKindIndex = 1
 local selectedElementIndex = 1
 local selectedOriginIndex = 1
 local selectedFormIndex = 1
@@ -2582,7 +3012,7 @@ selectorLayout.Parent = selectorRow
 
 local function makeSelectorButton(): TextButton
 	local button = Instance.new("TextButton")
-	button.Size = UDim2.new(1 / 3, -6, 1, 0)
+	button.Size = UDim2.new(1 / 4, -6, 1, 0)
 	button.BackgroundColor3 = Color3.fromRGB(43, 47, 72)
 	button.AutoButtonColor = true
 	button.Font = Enum.Font.GothamBold
@@ -2595,6 +3025,7 @@ local function makeSelectorButton(): TextButton
 	return button
 end
 
+local kindButton = makeSelectorButton()
 local elementButton = makeSelectorButton()
 local originButton = makeSelectorButton()
 local formButton = makeSelectorButton()
@@ -2675,7 +3106,7 @@ infoText.Font = Enum.Font.GothamMedium
 infoText.TextColor3 = Color3.fromRGB(194, 200, 224)
 infoText.TextSize = 13
 infoText.TextXAlignment = Enum.TextXAlignment.Left
-infoText.Text = "Q: 属性 / E: 出し方 / F: 攻撃形態 / R・左クリック: 発動"
+infoText.Text = "T: 系統 / Q: 属性 / E: 出し方 / F: 形 / R・左クリック: 発動"
 infoText.Parent = panel
 
 local cooldownText = Instance.new("TextLabel")
@@ -2710,8 +3141,21 @@ toastConstraint.MinSize = Vector2.new(280, 48)
 toastConstraint.MaxSize = Vector2.new(520, 48)
 toastConstraint.Parent = toast
 
-local function currentSelection(): (string, string, string)
-	return ElementOrder[selectedElementIndex], OriginOrder[selectedOriginIndex], FormOrder[selectedFormIndex]
+local function activeOriginOrder(kindId: string): {string}
+	return if kindId == "Material" then MaterialOriginOrder else OriginOrder
+end
+
+local function activeFormOrder(kindId: string): {string}
+	return if kindId == "Material" then MaterialFormOrder else FormOrder
+end
+
+local function currentSelection(): (string, string, string, string)
+	local kindId = KindOrder[selectedKindIndex]
+	local origins = activeOriginOrder(kindId)
+	local forms = activeFormOrder(kindId)
+	selectedOriginIndex = math.clamp(selectedOriginIndex, 1, #origins)
+	selectedFormIndex = math.clamp(selectedFormIndex, 1, #forms)
+	return kindId, ElementOrder[selectedElementIndex], origins[selectedOriginIndex], forms[selectedFormIndex]
 end
 
 local function findIndex(values: {string}, wanted: any): number?
@@ -2727,9 +3171,11 @@ local function findIndex(values: {string}, wanted: any): number?
 end
 
 local function syncSavedSelection()
+	selectedKindIndex = findIndex(KindOrder, player:GetAttribute("CustomSpellKind")) or selectedKindIndex
+	local kindId = KindOrder[selectedKindIndex]
 	selectedElementIndex = findIndex(ElementOrder, player:GetAttribute("CustomSpellElement")) or selectedElementIndex
-	selectedOriginIndex = findIndex(OriginOrder, player:GetAttribute("CustomSpellOrigin")) or selectedOriginIndex
-	selectedFormIndex = findIndex(FormOrder, player:GetAttribute("CustomSpellForm")) or selectedFormIndex
+	selectedOriginIndex = findIndex(activeOriginOrder(kindId), player:GetAttribute("CustomSpellOrigin")) or selectedOriginIndex
+	selectedFormIndex = findIndex(activeFormOrder(kindId), player:GetAttribute("CustomSpellForm")) or selectedFormIndex
 	local savedName = player:GetAttribute("CustomSpellName")
 	if typeof(savedName) == "string" and savedName ~= "" then
 		nameBox.Text = savedName
@@ -2755,8 +3201,8 @@ local function isPlayerInBattleGround(): boolean
 		and isPointInsidePart(bounds, root.Position)
 end
 
-local function spellKey(elementId: string, originId: string, formId: string): string
-	return string.format("%s|%s|%s", elementId, originId, formId)
+local function spellKey(kindId: string, elementId: string, originId: string, formId: string): string
+	return string.format("%s|%s|%s|%s", kindId, elementId, originId, formId)
 end
 
 local function showToast(message: string, color: Color3?)
@@ -2802,17 +3248,20 @@ local function updateMana()
 end
 
 local function updateSelectionLabels()
-	local elementId, originId, formId = currentSelection()
+	local kindId, elementId, originId, formId = currentSelection()
 	local element = getElementDef(elementId)
-	local origin = OriginDefs[originId]
-	local form = FormDefs[formId]
-	if not element or not origin or not form then
+	local kind = KindDefs[kindId]
+	local origin = if kindId == "Material" then MaterialOriginDefs[originId] else OriginDefs[originId]
+	local form = if kindId == "Material" then MaterialFormDefs[formId] else FormDefs[formId]
+	if not kind or not element or not origin or not form then
 		return
 	end
 
+	kindButton.Text = "系統 [T]\n" .. kind.DisplayName
 	elementButton.Text = "属性 [Q]\n" .. element.DisplayName
 	originButton.Text = "出し方 [E]\n" .. origin.DisplayName
-	formButton.Text = "攻撃形態 [F]\n" .. form.DisplayName
+	formButton.Text = (if kindId == "Material" then "物質形状 [F]\n" else "攻撃形態 [F]\n") .. form.DisplayName
+	kindButton.BackgroundColor3 = if kindId == "Material" then Color3.fromRGB(116, 104, 150) else Color3.fromRGB(72, 78, 128)
 	elementButton.BackgroundColor3 = element.Color:Lerp(Color3.fromRGB(30, 32, 50), 0.46)
 	castButton.BackgroundColor3 = element.Color
 end
@@ -2822,12 +3271,10 @@ local function updateMode()
 	local savedName = player:GetAttribute("CustomSpellName")
 	local hasSavedSpell = typeof(savedName) == "string" and savedName ~= ""
 
-	elementButton.Active = not inBattle
-	originButton.Active = not inBattle
-	formButton.Active = not inBattle
-	elementButton.AutoButtonColor = not inBattle
-	originButton.AutoButtonColor = not inBattle
-	formButton.AutoButtonColor = not inBattle
+	for _, button in { kindButton, elementButton, originButton, formButton } do
+		button.Active = not inBattle
+		button.AutoButtonColor = not inBattle
+	end
 	nameBox.Visible = not inBattle
 	saveButton.Visible = not inBattle
 	castButton.Visible = inBattle
@@ -2842,7 +3289,7 @@ end
 local function requestPreview()
 	previewGeneration += 1
 	local generation = previewGeneration
-	local elementId, originId, formId = currentSelection()
+	local kindId, elementId, originId, formId = currentSelection()
 
 	task.delay(0.08, function()
 		if generation ~= previewGeneration then
@@ -2851,6 +3298,7 @@ local function requestPreview()
 
 		local ok, result = pcall(function()
 			return GetSpellPreview:InvokeServer({
+				Kind = kindId,
 				Element = elementId,
 				Origin = originId,
 				Form = formId,
@@ -2866,12 +3314,22 @@ local function requestPreview()
 		end
 
 		previewData = result
-		infoText.Text = string.format(
-			"消費魔力 %d / ダメージ %.0f / CD %.1f秒",
-			result.ManaCost,
-			result.Damage,
-			result.Cooldown
-		)
+		if result.Kind == "Material" then
+			infoText.Text = string.format(
+				"消費魔力 %d / 耐久 %.0f / 寿命 %.1f秒 / CD %.1f秒",
+				result.ManaCost,
+				result.Health,
+				result.Lifetime,
+				result.Cooldown
+			)
+		else
+			infoText.Text = string.format(
+				"消費魔力 %d / 効果 %.0f / CD %.1f秒",
+				result.ManaCost,
+				result.Damage,
+				result.Cooldown
+			)
+		end
 		if typeof(result.CooldownRemaining) == "number" and typeof(result.Key) == "string" then
 			cooldownsByKey[result.Key] = math.max(
 				cooldownsByKey[result.Key] or 0,
@@ -2886,6 +3344,14 @@ local function selectionChanged()
 	requestPreview()
 end
 
+local function cycleKind()
+	if isPlayerInBattleGround() then return end
+	selectedKindIndex = selectedKindIndex % #KindOrder + 1
+	selectedOriginIndex = 1
+	selectedFormIndex = 1
+	selectionChanged()
+end
+
 local function cycleElement()
 	if isPlayerInBattleGround() then return end
 	selectedElementIndex = selectedElementIndex % #ElementOrder + 1
@@ -2894,16 +3360,21 @@ end
 
 local function cycleOrigin()
 	if isPlayerInBattleGround() then return end
-	selectedOriginIndex = selectedOriginIndex % #OriginOrder + 1
+	local kindId = KindOrder[selectedKindIndex]
+	local order = activeOriginOrder(kindId)
+	selectedOriginIndex = selectedOriginIndex % #order + 1
 	selectionChanged()
 end
 
 local function cycleForm()
 	if isPlayerInBattleGround() then return end
-	selectedFormIndex = selectedFormIndex % #FormOrder + 1
+	local kindId = KindOrder[selectedKindIndex]
+	local order = activeFormOrder(kindId)
+	selectedFormIndex = selectedFormIndex % #order + 1
 	selectionChanged()
 end
 
+kindButton.Activated:Connect(cycleKind)
 elementButton.Activated:Connect(cycleElement)
 originButton.Activated:Connect(cycleOrigin)
 formButton.Activated:Connect(cycleForm)
@@ -2913,10 +3384,11 @@ local function saveOriginalSpell()
 		showToast("魔法の作成・変更はロビーで行ってください", Color3.fromRGB(255, 214, 120))
 		return
 	end
-	local elementId, originId, formId = currentSelection()
+	local kindId, elementId, originId, formId = currentSelection()
 	local ok, result = pcall(function()
 		return SaveCustomSpell:InvokeServer({
 			Name = nameBox.Text,
+			Kind = kindId,
 			Element = elementId,
 			Origin = originId,
 			Form = formId,
@@ -2987,10 +3459,13 @@ local function castSpell()
 	if now < pendingUntil then
 		return
 	end
+	local kindId = player:GetAttribute("CustomSpellKind") or KindOrder[selectedKindIndex]
+	local origins = activeOriginOrder(kindId)
+	local forms = activeFormOrder(kindId)
 	local elementId = player:GetAttribute("CustomSpellElement") or ElementOrder[selectedElementIndex]
-	local originId = player:GetAttribute("CustomSpellOrigin") or OriginOrder[selectedOriginIndex]
-	local formId = player:GetAttribute("CustomSpellForm") or FormOrder[selectedFormIndex]
-	local key = spellKey(elementId, originId, formId)
+	local originId = player:GetAttribute("CustomSpellOrigin") or origins[selectedOriginIndex]
+	local formId = player:GetAttribute("CustomSpellForm") or forms[selectedFormIndex]
+	local key = spellKey(kindId, elementId, originId, formId)
 	local readyAt = cooldownsByKey[key] or 0
 	if now < readyAt then
 		showToast(string.format("クールダウン %.1f秒", readyAt - now), Color3.fromRGB(255, 214, 120))
@@ -3020,7 +3495,9 @@ UserInputService.InputBegan:Connect(function(input: InputObject, gameProcessed: 
 		return
 	end
 
-	if input.KeyCode == Enum.KeyCode.Q then
+	if input.KeyCode == Enum.KeyCode.T then
+		cycleKind()
+	elseif input.KeyCode == Enum.KeyCode.Q then
 		cycleElement()
 	elseif input.KeyCode == Enum.KeyCode.E then
 		cycleOrigin()
@@ -3149,7 +3626,7 @@ end)
 
 player:GetAttributeChangedSignal("Mana"):Connect(updateMana)
 player:GetAttributeChangedSignal("MaxMana"):Connect(updateMana)
-for _, attributeName in {"CustomSpellName", "CustomSpellElement", "CustomSpellOrigin", "CustomSpellForm"} do
+for _, attributeName in {"CustomSpellName", "CustomSpellKind", "CustomSpellElement", "CustomSpellOrigin", "CustomSpellForm"} do
 	player:GetAttributeChangedSignal(attributeName):Connect(function()
 		syncSavedSelection()
 		updateSelectionLabels()
@@ -3164,10 +3641,13 @@ RunService.RenderStepped:Connect(function(deltaTime)
 		modeAccumulator = 0
 		updateMode()
 	end
+	local kindId = player:GetAttribute("CustomSpellKind") or KindOrder[selectedKindIndex]
+	local origins = activeOriginOrder(kindId)
+	local forms = activeFormOrder(kindId)
 	local elementId = player:GetAttribute("CustomSpellElement") or ElementOrder[selectedElementIndex]
-	local originId = player:GetAttribute("CustomSpellOrigin") or OriginOrder[selectedOriginIndex]
-	local formId = player:GetAttribute("CustomSpellForm") or FormOrder[selectedFormIndex]
-	local remaining = (cooldownsByKey[spellKey(elementId, originId, formId)] or 0) - os.clock()
+	local originId = player:GetAttribute("CustomSpellOrigin") or origins[selectedOriginIndex]
+	local formId = player:GetAttribute("CustomSpellForm") or forms[selectedFormIndex]
+	local remaining = (cooldownsByKey[spellKey(kindId, elementId, originId, formId)] or 0) - os.clock()
 	if remaining > 0 then
 		cooldownText.Visible = true
 		cooldownText.Text = string.format("COOLDOWN %.1f", remaining)
