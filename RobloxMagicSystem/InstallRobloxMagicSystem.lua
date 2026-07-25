@@ -1903,6 +1903,7 @@ return BehaviorResolver
 local SOURCE_7 = [==[
 --!strict
 
+local DataStoreService = game:GetService("DataStoreService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
@@ -1971,6 +1972,7 @@ local castSpellRequest = ensureRemote(remotes, "CastSpellRequest", "RemoteEvent"
 local spellFx = ensureRemote(remotes, "SpellFx", "RemoteEvent") :: RemoteEvent
 local getSpellPreview = ensureRemote(remotes, "GetSpellPreview", "RemoteFunction") :: RemoteFunction
 local saveCustomSpell = ensureRemote(remotes, "SaveCustomSpell", "RemoteFunction") :: RemoteFunction
+local customSpellStore = DataStoreService:GetDataStore("OriginalMagicV1")
 
 type RateState = {
 	tokens: number,
@@ -2184,9 +2186,22 @@ local function handleSaveCustomSpell(player: Player, payload: any): any
 	player:SetAttribute("CustomSpellOrigin", spec.Origin)
 	player:SetAttribute("CustomSpellForm", spec.Form)
 
+	local persisted = pcall(function()
+		customSpellStore:SetAsync(tostring(player.UserId), {
+			Name = filteredName,
+			Element = spec.Element,
+			Origin = spec.Origin,
+			Form = spec.Form,
+		})
+	end)
+	if not persisted then
+		warn("[Magic] DataStoreへオリジナル魔法を保存できませんでした。StudioテストではAPI Servicesを確認してください。")
+	end
+
 	local preview = SpellDefs.ToPreview(spec)
 	preview.Ok = true
 	preview.Name = filteredName
+	preview.Persistent = persisted
 	return preview
 end
 
@@ -2197,6 +2212,23 @@ end
 
 local function handlePlayerAdded(player: Player)
 	getPlayerState(player)
+	task.spawn(function()
+		local ok, saved = pcall(function()
+			return customSpellStore:GetAsync(tostring(player.UserId))
+		end)
+		if not ok or typeof(saved) ~= "table" then
+			return
+		end
+		local spec = SpellDefs.Build(saved.Element, saved.Origin, saved.Form)
+		local nameLength = if typeof(saved.Name) == "string" then utf8.len(saved.Name) else nil
+		if not spec or not nameLength or nameLength < 1 or nameLength > 24 then
+			return
+		end
+		player:SetAttribute("CustomSpellName", saved.Name)
+		player:SetAttribute("CustomSpellElement", spec.Element)
+		player:SetAttribute("CustomSpellOrigin", spec.Origin)
+		player:SetAttribute("CustomSpellForm", spec.Form)
+	end)
 end
 
 local function handlePlayerRemoving(player: Player)
@@ -2352,7 +2384,7 @@ saveCustomSpell.OnServerInvoke = handleSaveCustomSpell
 castSpellRequest.OnServerEvent:Connect(handleCastRequest)
 
 for _, player in Players:GetPlayers() do
-	getPlayerState(player)
+	handlePlayerAdded(player)
 end
 ]==]
 
@@ -2896,7 +2928,11 @@ local function saveOriginalSpell()
 		return
 	end
 	nameBox.Text = result.Name
-	showToast("オリジナル魔法「" .. result.Name .. "」を保存しました", Color3.fromRGB(155, 255, 196))
+	local savedMessage = "オリジナル魔法「" .. result.Name .. "」を保存しました"
+	if result.Persistent == false then
+		savedMessage ..= "（このセッション中）"
+	end
+	showToast(savedMessage, Color3.fromRGB(155, 255, 196))
 	updateMode()
 end
 
