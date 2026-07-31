@@ -1,29 +1,281 @@
 -- Roblox Fireball VFX installer
 -- Studioを停止した状態で View > Command Bar に全体を貼り付けて実行してください。
 --
--- このインストーラーは、旧RobloxMagicSystemの動作を削除し、
--- 火球の発射・飛行・命中・爆発だけを持つ軽量なVFXデモへ置き換えます。
---
--- 必須:
--- 1. 下の4つの画像IDを、Asset Managerでインポート済みの画像IDへ変更する
--- 2. コマンドバーでこのファイル全体を実行する
--- 3. Play開始後、Fキーで火球を発射する
+-- 重要:
+-- この版は、最初に旧魔法システムと旧操作UIを削除してから、
+-- 火球の発射・飛行・命中・爆発VFXをインストールします。
+-- 画像IDが未設定でも、旧システムの削除処理までは必ず実行されます。
 
 local TEXTURE_IDS = {
-	FireSoftBlob = "0", -- fire_soft_blob
-	SparkStreak = "0", -- spark_streak
-	FlashSoft = "0", -- flash_soft
-	ExplosionRing = "0", -- explosion_ring
+	FireSoftBlob = "0", -- fire_soft_blob の画像ID
+	SparkStreak = "0", -- spark_streak の画像ID
+	FlashSoft = "0", -- flash_soft の画像ID
+	ExplosionRing = "0", -- explosion_ring の画像ID
 }
 
+local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
 local ServerScriptService = game:GetService("ServerScriptService")
+local StarterGui = game:GetService("StarterGui")
 local StarterPlayer = game:GetService("StarterPlayer")
 local Workspace = game:GetService("Workspace")
 
+if RunService:IsRunning() then
+	warn("[Fireball Installer] Play中です。旧スクリプトの接続が残る場合があるため、停止してからもう一度実行してください。")
+end
+
+local removedCount = 0
+
+local function destroyObject(object)
+	if object and object.Parent then
+		object:Destroy()
+		removedCount += 1
+	end
+end
+
+local function destroyNamedChildren(parent, names)
+	if not parent then
+		return
+	end
+
+	for _, name in ipairs(names) do
+		destroyObject(parent:FindFirstChild(name))
+	end
+end
+
+local LEGACY_SCRIPT_NAMES = {
+	["MagicController"] = true,
+	["MagicController.client.lua"] = true,
+	["MagicController.client.luau"] = true,
+	["SpellClient"] = true,
+	["SpellClient.lua"] = true,
+	["SpellClient.client.lua"] = true,
+	["SpellClient.client.luau"] = true,
+	["MagicBattle"] = true,
+	["MagicBattle.server.lua"] = true,
+	["MagicBattle.server.luau"] = true,
+	["WorldBuilder"] = true,
+	["WorldBuilder.server.lua"] = true,
+	["WorldBuilder.server.luau"] = true,
+	["SpellService"] = true,
+	["SpellService.lua"] = true,
+	["SpellService.server.lua"] = true,
+	["SpellService.server.luau"] = true,
+	["SpellDefinitions"] = true,
+	["SpellDefinitions.lua"] = true,
+	["SpellDefinitions.luau"] = true,
+	["FireballServer"] = true,
+	["FireballClient"] = true,
+}
+
+local LEGACY_SOURCE_MARKERS = {
+	"CustomSpellKind",
+	"SaveCustomSpell",
+	"GetSpellPreview",
+	"CastSpellRequest",
+	"LOBBY MAGIC FORGE",
+	"MagicHud",
+}
+
+local function scriptLooksLegacy(object)
+	if not object:IsA("LuaSourceContainer") then
+		return false
+	end
+
+	if LEGACY_SCRIPT_NAMES[object.Name] then
+		return true
+	end
+
+	local ok, source = pcall(function()
+		return object.Source
+	end)
+	if not ok or typeof(source) ~= "string" then
+		return false
+	end
+
+	local markerCount = 0
+	for _, marker in ipairs(LEGACY_SOURCE_MARKERS) do
+		if string.find(source, marker, 1, true) then
+			markerCount += 1
+		end
+	end
+
+	return markerCount >= 2
+end
+
+local function instanceDepth(object)
+	local depth = 0
+	local current = object.Parent
+	while current do
+		depth += 1
+		current = current.Parent
+	end
+	return depth
+end
+
+local function removeLegacyScriptsBelow(root)
+	if not root then
+		return
+	end
+
+	local targets = {}
+	for _, object in ipairs(root:GetDescendants()) do
+		if scriptLooksLegacy(object) then
+			table.insert(targets, object)
+		end
+	end
+
+	table.sort(targets, function(a, b)
+		return instanceDepth(a) > instanceDepth(b)
+	end)
+
+	for _, object in ipairs(targets) do
+		destroyObject(object)
+	end
+end
+
+local function removeOldMagicSystem()
+	-- サーバー側の旧制御
+	destroyNamedChildren(ServerScriptService, {
+		"Magic",
+		"MagicBattle",
+		"MagicBattle.server.lua",
+		"MagicBattle.server.luau",
+		"WorldBuilder",
+		"WorldBuilder.server.lua",
+		"WorldBuilder.server.luau",
+		"SpellService",
+		"SpellService.server.lua",
+		"SpellService.server.luau",
+		"FireballServer",
+	})
+	removeLegacyScriptsBelow(ServerScriptService)
+
+	-- クライアント側の旧操作
+	local starterPlayerScripts = StarterPlayer:FindFirstChild("StarterPlayerScripts")
+	local starterCharacterScripts = StarterPlayer:FindFirstChild("StarterCharacterScripts")
+
+	destroyNamedChildren(starterPlayerScripts, {
+		"MagicController",
+		"MagicController.client.lua",
+		"MagicController.client.luau",
+		"SpellClient",
+		"SpellClient.lua",
+		"SpellClient.client.lua",
+		"SpellClient.client.luau",
+		"FireballClient",
+	})
+	destroyNamedChildren(starterCharacterScripts, {
+		"MagicController",
+		"MagicController.client.lua",
+		"MagicController.client.luau",
+		"SpellClient",
+		"SpellClient.lua",
+		"SpellClient.client.lua",
+		"SpellClient.client.luau",
+	})
+	removeLegacyScriptsBelow(StarterPlayer)
+
+	-- 旧UI
+	destroyNamedChildren(StarterGui, {
+		"MagicHud",
+		"MagicGui",
+		"SpellGui",
+		"MagicForge",
+	})
+	removeLegacyScriptsBelow(StarterGui)
+
+	for _, player in ipairs(Players:GetPlayers()) do
+		local playerGui = player:FindFirstChildOfClass("PlayerGui")
+		destroyNamedChildren(playerGui, {
+			"MagicHud",
+			"MagicGui",
+			"SpellGui",
+			"MagicForge",
+		})
+
+		for _, attributeName in ipairs({
+			"Mana",
+			"MaxMana",
+			"CustomSpellName",
+			"CustomSpellKind",
+			"CustomSpellElement",
+			"CustomSpellOrigin",
+			"CustomSpellForm",
+		}) do
+			player:SetAttribute(attributeName, nil)
+		end
+	end
+
+	-- 旧共有モジュール
+	local shared = ReplicatedStorage:FindFirstChild("Shared")
+	destroyNamedChildren(shared, {
+		"ElementDefs",
+		"ElementDefs.lua",
+		"ElementDefs.luau",
+		"SpellDefs",
+		"SpellDefs.lua",
+		"SpellDefs.luau",
+		"SpellDefinitions",
+		"SpellDefinitions.lua",
+		"SpellDefinitions.luau",
+		"SharedUtil",
+		"SharedUtil.lua",
+		"SharedUtil.luau",
+	})
+	if shared and #shared:GetChildren() == 0 then
+		destroyObject(shared)
+	end
+
+	-- 旧Remote
+	local remotes = ReplicatedStorage:FindFirstChild("Remotes")
+	destroyNamedChildren(remotes, {
+		"CastSpellRequest",
+		"SpellFx",
+		"GetSpellPreview",
+		"SaveCustomSpell",
+	})
+	if remotes and #remotes:GetChildren() == 0 then
+		destroyObject(remotes)
+	end
+
+	destroyNamedChildren(ReplicatedStorage, {
+		"MagicRemotes",
+		"MagicSystem",
+		"FireballVFX",
+	})
+
+	-- 旧ランタイム生成物
+	destroyNamedChildren(Workspace, {
+		"MagicRuntime",
+		"FireballRuntime",
+	})
+
+	for _, object in ipairs(Workspace:GetChildren()) do
+		if string.sub(object.Name, 1, 14) == "MagicClientFx_" then
+			destroyObject(object)
+		elseif object:GetAttribute("FireballVFXRuntime") == true then
+			destroyObject(object)
+		end
+	end
+end
+
+-- 画像IDの検証より先に削除します。
+removeOldMagicSystem()
+print(string.format("[Fireball Installer] 旧魔法システムを削除しました (%d objects)", removedCount))
+
 local function contentId(value, label)
 	local digits = tostring(value):match("(%d+)")
-	assert(digits and tonumber(digits) and tonumber(digits) > 0, label .. " の画像IDを設定してください")
+	if not digits or not tonumber(digits) or tonumber(digits) <= 0 then
+		error(
+			string.format(
+				"%s の画像IDが未設定です。旧魔法システムの削除は完了しています。TEXTURE_IDSを設定してもう一度実行してください。",
+				label
+			),
+			0
+		)
+	end
 	return "rbxassetid://" .. digits
 end
 
@@ -33,63 +285,6 @@ local TEXTURES = {
 	Flash = contentId(TEXTURE_IDS.FlashSoft, "FlashSoft"),
 	Ring = contentId(TEXTURE_IDS.ExplosionRing, "ExplosionRing"),
 }
-
-local function destroyNamed(parent, names)
-	if not parent then
-		return
-	end
-	for _, name in ipairs(names) do
-		local child = parent:FindFirstChild(name)
-		if child then
-			child:Destroy()
-		end
-	end
-end
-
--- 旧システムだけを対象に削除します。
-destroyNamed(ServerScriptService, {
-	"Magic",
-	"MagicBattle",
-	"WorldBuilder",
-	"SpellService",
-	"FireballServer",
-})
-
-local starterScripts = StarterPlayer:WaitForChild("StarterPlayerScripts")
-destroyNamed(starterScripts, {
-	"SpellClient",
-	"MagicController",
-	"FireballClient",
-})
-
-local oldShared = ReplicatedStorage:FindFirstChild("Shared")
-destroyNamed(oldShared, {
-	"ElementDefs",
-	"SpellDefs",
-})
-if oldShared and #oldShared:GetChildren() == 0 then
-	oldShared:Destroy()
-end
-
-local oldRemotes = ReplicatedStorage:FindFirstChild("Remotes")
-destroyNamed(oldRemotes, {
-	"CastSpellRequest",
-	"SpellFx",
-	"GetSpellPreview",
-	"SaveCustomSpell",
-})
-if oldRemotes and #oldRemotes:GetChildren() == 0 then
-	oldRemotes:Destroy()
-end
-
-destroyNamed(ReplicatedStorage, {
-	"FireballVFX",
-})
-
-destroyNamed(Workspace, {
-	"MagicRuntime",
-	"FireballRuntime",
-})
 
 local root = Instance.new("Folder")
 root.Name = "FireballVFX"
@@ -205,7 +400,6 @@ flightSparks.Transparency = NumberSequence.new({
 
 local trailTop = createAttachment(projectile, "TrailTop", Vector3.new(0, 0.25, 0))
 local trailBottom = createAttachment(projectile, "TrailBottom", Vector3.new(0, -0.25, 0))
-
 local trail = Instance.new("Trail")
 trail.Name = "FireTrail"
 trail.Attachment0 = trailTop
@@ -399,13 +593,16 @@ local Workspace = game:GetService("Workspace")
 
 local ROOT = script.Parent
 local TEMPLATES = ROOT:WaitForChild("Templates")
-
 local FireballVFX = {}
 
-local function destroyLater(instance: Instance, seconds: number)
+local function markRuntime(object: Instance)
+	object:SetAttribute("FireballVFXRuntime", true)
+end
+
+local function destroyLater(object: Instance, seconds: number)
 	task.delay(seconds, function()
-		if instance.Parent then
-			instance:Destroy()
+		if object.Parent then
+			object:Destroy()
 		end
 	end)
 end
@@ -423,6 +620,7 @@ end
 
 function FireballVFX.Cast(cframe: CFrame): BasePart
 	local effect = (TEMPLATES:WaitForChild("Cast") :: BasePart):Clone()
+	markRuntime(effect)
 	effect.CFrame = cframe
 	effect.Parent = Workspace
 	emitStoredParticles(effect)
@@ -436,6 +634,7 @@ function FireballVFX.Explode(positionOrCFrame: Vector3 | CFrame): BasePart
 		else CFrame.new(positionOrCFrame)
 
 	local effect = (TEMPLATES:WaitForChild("Explosion") :: BasePart):Clone()
+	markRuntime(effect)
 	effect.CFrame = cframe
 	effect.Parent = Workspace
 	emitStoredParticles(effect)
@@ -455,6 +654,7 @@ end
 
 function FireballVFX.CreateProjectile(cframe: CFrame): BasePart
 	local projectile = (TEMPLATES:WaitForChild("Projectile") :: BasePart):Clone()
+	markRuntime(projectile)
 	projectile.CFrame = cframe
 	projectile.Parent = Workspace
 	return projectile
@@ -476,8 +676,8 @@ function FireballVFX.Launch(config: {
 	)
 
 	local direction = config.direction.Unit
-	local speed = math.max(1, tonumber(config.speed) or 90)
-	local maxDistance = math.max(1, tonumber(config.maxDistance) or 140)
+	local speed = math.max(1, tonumber(config.speed) or 92)
+	local maxDistance = math.max(1, tonumber(config.maxDistance) or 145)
 	local startCFrame = CFrame.lookAt(config.origin, config.origin + direction)
 
 	FireballVFX.Cast(startCFrame)
@@ -485,18 +685,18 @@ function FireballVFX.Launch(config: {
 
 	local ignoredInstances = {}
 	if typeof(config.ignore) == "table" then
-		for _, instance in ipairs(config.ignore) do
-			if typeof(instance) == "Instance" then
-				table.insert(ignoredInstances, instance)
+		for _, object in ipairs(config.ignore) do
+			if typeof(object) == "Instance" then
+				table.insert(ignoredInstances, object)
 			end
 		end
 	end
 	table.insert(ignoredInstances, projectile)
 
-	local raycastParams = RaycastParams.new()
-	raycastParams.FilterType = Enum.RaycastFilterType.Exclude
-	raycastParams.FilterDescendantsInstances = ignoredInstances
-	raycastParams.IgnoreWater = true
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Exclude
+	params.FilterDescendantsInstances = ignoredInstances
+	params.IgnoreWater = true
 
 	local traveled = 0
 	local finished = false
@@ -529,20 +729,15 @@ function FireballVFX.Launch(config: {
 			return
 		end
 
-		local remainingDistance = maxDistance - traveled
-		if remainingDistance <= 0 then
+		local remaining = maxDistance - traveled
+		if remaining <= 0 then
 			finish(projectile.Position, nil)
 			return
 		end
 
-		local stepDistance = math.min(speed * deltaTime, remainingDistance)
+		local stepDistance = math.min(speed * deltaTime, remaining)
 		local currentPosition = projectile.Position
-		local result = Workspace:Raycast(
-			currentPosition,
-			direction * stepDistance,
-			raycastParams
-		)
-
+		local result = Workspace:Raycast(currentPosition, direction * stepDistance, params)
 		if result then
 			finish(result.Position, result)
 			return
@@ -586,9 +781,9 @@ local function isFiniteVector3(value: any): boolean
 	return value.X == value.X
 		and value.Y == value.Y
 		and value.Z == value.Z
-		and math.abs(value.X) < 1e6
-		and math.abs(value.Y) < 1e6
-		and math.abs(value.Z) < 1e6
+		and math.abs(value.X) < 1000000
+		and math.abs(value.Y) < 1000000
+		and math.abs(value.Z) < 1000000
 end
 
 castRequest.OnServerEvent:Connect(function(player: Player, requestedDirection: any)
@@ -610,10 +805,7 @@ castRequest.OnServerEvent:Connect(function(player: Player, requestedDirection: a
 	end
 
 	lastCast[player] = now
-
-	local origin = rootPart.Position
-		+ direction * 4
-		+ Vector3.new(0, 1.35, 0)
+	local origin = rootPart.Position + direction * 4 + Vector3.new(0, 1.35, 0)
 
 	VFX.Launch({
 		origin = origin,
@@ -629,15 +821,48 @@ Players.PlayerRemoving:Connect(function(player)
 end)
 ]==]
 
+local starterPlayerScripts = StarterPlayer:WaitForChild("StarterPlayerScripts")
 local client = Instance.new("LocalScript")
 client.Name = "FireballClient"
-client.Parent = starterScripts
+client.Parent = starterPlayerScripts
 client.Source = [==[
 --!strict
 
 local ContextActionService = game:GetService("ContextActionService")
+local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Workspace = game:GetService("Workspace")
+
+local player = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
+
+-- 旧UIが保存・複製されていた場合も消します。
+for _, name in ipairs({ "MagicHud", "MagicGui", "SpellGui", "MagicForge" }) do
+	local oldGui = playerGui:FindFirstChild(name)
+	if oldGui then
+		oldGui:Destroy()
+	end
+end
+
+for _, object in ipairs(Workspace:GetChildren()) do
+	if string.sub(object.Name, 1, 14) == "MagicClientFx_" then
+		object:Destroy()
+	end
+end
+
+-- 過去のContextAction名が残っている場合に備えて解除します。
+for _, actionName in ipairs({
+	"CastSpell",
+	"CastMagic",
+	"MagicCast",
+	"CycleElement",
+	"CycleOrigin",
+	"CycleForm",
+	"CycleKind",
+	"CastFireball",
+}) do
+	ContextActionService:UnbindAction(actionName)
+end
 
 local castRequest = ReplicatedStorage
 	:WaitForChild("FireballVFX")
@@ -655,11 +880,9 @@ local function castFireball(
 	end
 
 	local camera = Workspace.CurrentCamera
-	if not camera then
-		return Enum.ContextActionResult.Sink
+	if camera then
+		castRequest:FireServer(camera.CFrame.LookVector)
 	end
-
-	castRequest:FireServer(camera.CFrame.LookVector)
 	return Enum.ContextActionResult.Sink
 end
 
@@ -674,6 +897,5 @@ ContextActionService:SetTitle(ACTION_NAME, "FIRE")
 ContextActionService:SetPosition(ACTION_NAME, UDim2.fromScale(0.84, 0.72))
 ]==]
 
-print("[Fireball VFX Installer] 完了")
-print("ReplicatedStorage > FireballVFX を作成しました")
+print("[Fireball Installer] インストール完了")
 print("Play開始後、Fキー・左クリック・モバイルボタンで火球を発射できます")
