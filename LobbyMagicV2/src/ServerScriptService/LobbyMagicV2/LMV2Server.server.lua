@@ -103,6 +103,7 @@ local function worldStatus(): { [string]: boolean }
 end
 
 local function snapshot(player: Player): { [string]: any }
+	local vfxReady, missingVfxObject = FireVFX.GetInstallStatus()
 	return {
 		SystemId = Config.SystemId,
 		State = getState(player),
@@ -113,6 +114,8 @@ local function snapshot(player: Player): { [string]: any }
 		CooldownEnd = tonumber(player:GetAttribute(Config.CooldownEndAttribute)) or 0,
 		ServerTime = serverTime(),
 		World = worldStatus(),
+		FireVFXReady = vfxReady,
+		MissingFireVFXObject = missingVfxObject,
 	}
 end
 
@@ -417,6 +420,18 @@ local function handleCastRequest(player: Player, payload: any)
 	if (activeProjectileCount[player] or 0) >= Config.Security.MaxProjectilesPerPlayer then
 		return
 	end
+	local vfxReady, missingVfxObject = FireVFX.GetInstallStatus()
+	if not vfxReady then
+		sendFeedback(
+			player,
+			"FireVFXMissing",
+			string.format(
+				"炎エフェクトがありません（%s）。InstallRobloxMagicSystem.luaを実行してください。",
+				missingVfxObject or "FireballVFX/Templates"
+			)
+		)
+		return
+	end
 	local character = player.Character
 	local humanoid = if character then character:FindFirstChildOfClass("Humanoid") else nil
 	local characterRoot = if character then character:FindFirstChild("HumanoidRootPart") else nil
@@ -571,6 +586,16 @@ end
 
 ManaService.Start()
 setupWorldPrompts()
+
+local fireVfxReady, missingFireVfxObject = FireVFX.GetInstallStatus()
+if not fireVfxReady then
+	warn(
+		string.format(
+			"[LobbyMagicV2] 炎VFXが未導入です: %s。RobloxMagicSystem/InstallRobloxMagicSystem.luaを実行してください。",
+			missingFireVfxObject or "ReplicatedStorage/FireballVFX/Templates"
+		)
+	)
+end
 
 local function isDirectWorldChild(instance: Instance): boolean
 	local root = worldRoot()
