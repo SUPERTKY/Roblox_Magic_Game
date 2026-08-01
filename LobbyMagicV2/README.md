@@ -22,7 +22,7 @@
 
 旧 `Magic`、`Remotes`、`SpellClient`、`FireballServer`、`FireballClient` は呼び出しません。
 
-唯一の例外として、Studioに次の炎エフェクトテンプレートが存在する場合は、見た目だけを複製して使います。
+唯一の例外として、`RobloxMagicSystem/InstallRobloxMagicSystem.lua` がStudioに作成する次の炎エフェクトテンプレートを、見た目だけ複製して使います。
 
 ```text
 ReplicatedStorage
@@ -33,7 +33,17 @@ ReplicatedStorage
       └─ Explosion (BasePart)
 ```
 
-旧 `FireballVFX` のModuleScriptやRemoteEventは実行しません。テンプレートが無い場合は、Roblox内蔵テクスチャを使った簡易炎VFXへ自動的に切り替わります。
+旧 `FireballVFX` のModuleScriptやRemoteEventは実行しません。`Projectile`、`Cast`、`Explosion`の3テンプレートは必須です。簡易VFXへの切り替えは行いません。
+
+### 炎VFXの準備
+
+1. StudioのPlayテストを停止します。
+2. `RobloxMagicSystem/InstallRobloxMagicSystem.lua` 冒頭の `TEXTURE_IDS` に4枚の画像IDを設定します。
+3. スクリプト全体をStudioのCommand Barで実行します。
+4. `ReplicatedStorage/FireballVFX/Templates` に `Projectile`、`Cast`、`Explosion` が作成されたことを確認します。
+5. 新システムだけで操作する場合は、インストーラーが追加した旧 `FireballServer` と `FireballClient` を無効化します。`ReplicatedStorage/FireballVFX` は残します。
+
+炎VFXが不足している場合、Lobby Magic V2はマナを消費せず発動を拒否し、OutputとUIへ不足パスを表示します。
 
 ## Studioで作成する3D構造
 
@@ -77,7 +87,7 @@ rojo serve LobbyMagicV2/default.project.json
 
 StudioのRojoプラグインから接続したあと、Playテストを開始してください。
 
-旧プロジェクトの `RobloxMagicSystem/default.project.json` と同時に同期する必要はありません。既にStudioに旧システムが入っていても、新システムの名前とRemoteは衝突しません。ただし同じ入力で旧魔法まで発動する場合は、旧 `FireballClient` / `SpellClient` を無効化してください。炎VFXの `ReplicatedStorage/FireballVFX/Templates` は残して構いません。
+旧プロジェクトの `RobloxMagicSystem/default.project.json` と同時に同期する必要はありません。既にStudioに旧システムが入っていても、新システムの名前とRemoteは衝突しません。同じ入力で旧魔法まで発動しないように、旧 `FireballClient` / `SpellClient` は無効化してください。炎VFXの `ReplicatedStorage/FireballVFX/Templates` は必ず残します。
 
 ## UIなしでのゲーム進行
 
@@ -168,11 +178,12 @@ EnemyDummy (Model)
 2. 工房PromptまたはUIでファイアボムを作る
 3. 表示がマナ37・クールダウン3.5秒になる
 4. ExitGateから`GroundSpawn`へ移動する
-5. 敵NPCの近くを狙って発動し、火球が指定地点または障害物で爆発する
-6. 半径内の敵だけが25ダメージを受ける
-7. マナ不足・クールダウン中はサーバーに拒否される
-8. ReturnGateでLobbySpawnへ戻る
-9. グラウンドで倒された場合も次のRespawnでロビーへ戻る
+5. `InstallRobloxMagicSystem.lua` で作った発射・飛行・爆発エフェクトが表示される
+6. 敵NPCの近くを狙って発動し、火球が指定地点または障害物で爆発する
+7. 半径内の敵だけが25ダメージを受ける
+8. マナ不足・クールダウン中はサーバーに拒否される
+9. ReturnGateでLobbySpawnへ戻る
+10. グラウンドで倒された場合も次のRespawnでロビーへ戻る
 
 ## 今回まだ入れていないもの
 
