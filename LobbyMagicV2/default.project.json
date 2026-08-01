@@ -22,6 +22,9 @@
           "Feedback": {
             "$className": "RemoteEvent"
           },
+          "VFXEvent": {
+            "$className": "RemoteEvent"
+          },
           "GetSnapshot": {
             "$className": "RemoteFunction"
           }

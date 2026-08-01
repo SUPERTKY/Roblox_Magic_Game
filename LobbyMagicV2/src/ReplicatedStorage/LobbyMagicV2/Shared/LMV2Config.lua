@@ -12,6 +12,13 @@ local Config = {
 	MaxManaAttribute = "LMV2_MaxMana",
 	CooldownEndAttribute = "LMV2_CooldownEnd",
 	TeamAttribute = "LMV2_Team",
+	SelectionAttributes = {
+		Attribute = "LMV2_SelectedAttribute",
+		Creation = "LMV2_SelectedCreation",
+		Target = "LMV2_SelectedTarget",
+		Origin = "LMV2_SelectedOrigin",
+		Attack = "LMV2_SelectedAttack",
+	},
 
 	-- falseにするとLobbyMagicV2UIは何も作りません。
 	-- ProximityPromptとLMV2Clientによる発動は残るため、ゲーム機能は止まりません。
@@ -22,6 +29,7 @@ local Config = {
 		LobbySpawnName = "LobbySpawn",
 		GroundSpawnName = "GroundSpawn",
 		ForgeConsoleName = "ForgeConsole",
+		ForgeUIZoneName = "ForgeUIZone",
 		ExitGateName = "ExitGate",
 		ReturnGateName = "ReturnGate",
 		TeleportHeight = 4,

@@ -52,7 +52,7 @@ local Components: { [string]: { [string]: { [string]: any } } } = {
 	},
 }
 
-local Selection: { [string]: string } = {
+local DefaultSelection: { [string]: string } = {
 	Attribute = "Fire",
 	Creation = "Generate",
 	Target = "Enemy",
@@ -68,6 +68,22 @@ local ComponentOrder: { string } = {
 	"Attack",
 }
 
+local CategoryDisplayNames: { [string]: string } = {
+	Attribute = "属性",
+	Creation = "生成方法",
+	Target = "対象",
+	Origin = "発生場所",
+	Attack = "攻撃方法",
+}
+
+local OptionOrder: { [string]: { string } } = {
+	Attribute = { "Fire" },
+	Creation = { "Generate" },
+	Target = { "Enemy" },
+	Origin = { "Self" },
+	Attack = { "ThrowPointExplosion" },
+}
+
 local Catalog = {}
 
 local function copyComponent(component: { [string]: any }): { [string]: any }
@@ -79,9 +95,34 @@ local function copyComponent(component: { [string]: any }): { [string]: any }
 	}
 end
 
-function Catalog.BuildExample(): { [string]: any }
+function Catalog.CopyDefaultSelection(): { [string]: string }
+	return table.clone(DefaultSelection)
+end
+
+function Catalog.GetOptionIds(category: any): { string }
+	if typeof(category) ~= "string" then
+		return {}
+	end
+	local options = OptionOrder[category]
+	return if options then table.clone(options) else {}
+end
+
+function Catalog.GetComponent(category: any, componentId: any): { [string]: any }?
+	if typeof(category) ~= "string" or typeof(componentId) ~= "string" then
+		return nil
+	end
+	local group = Components[category]
+	return if group then group[componentId] else nil
+end
+
+function Catalog.Build(selection: any): { [string]: any }?
+	if typeof(selection) ~= "table" then
+		return nil
+	end
+
 	local mana = BaseCost.Mana
 	local cooldown = BaseCost.Cooldown
+	local normalizedSelection: { [string]: string } = {}
 	local costBreakdown = {
 		{
 			Category = "Base",
@@ -93,9 +134,16 @@ function Catalog.BuildExample(): { [string]: any }
 	}
 
 	for _, category in ipairs(ComponentOrder) do
-		local selectedId = Selection[category]
+		local selectedId = selection[category]
+		if typeof(selectedId) ~= "string" then
+			return nil
+		end
 		local group = Components[category]
 		local component = group[selectedId]
+		if not component then
+			return nil
+		end
+		normalizedSelection[category] = selectedId
 		mana += component.Mana
 		cooldown += component.Cooldown
 
@@ -105,9 +153,16 @@ function Catalog.BuildExample(): { [string]: any }
 	end
 
 	return {
-		Key = "LMV2_Fire_Generate_Enemy_Self_ThrowPointExplosion",
+		Key = string.format(
+			"LMV2_%s_%s_%s_%s_%s",
+			normalizedSelection.Attribute,
+			normalizedSelection.Creation,
+			normalizedSelection.Target,
+			normalizedSelection.Origin,
+			normalizedSelection.Attack
+		),
 		DisplayName = "ファイアボム",
-		Selection = table.clone(Selection),
+		Selection = normalizedSelection,
 		CostBreakdown = costBreakdown,
 		ManaCost = mana,
 		Cooldown = cooldown,
@@ -118,13 +173,22 @@ function Catalog.BuildExample(): { [string]: any }
 	}
 end
 
+function Catalog.BuildExample(): { [string]: any }
+	local spell = Catalog.Build(DefaultSelection)
+	assert(spell, "既定の魔法設定が壊れています")
+	return spell
+end
+
 function Catalog.IsExampleSpellKey(value: any): boolean
 	return typeof(value) == "string" and value == Catalog.BuildExample().Key
 end
 
 Catalog.BaseCost = BaseCost
 Catalog.Components = Components
-Catalog.Selection = Selection
+Catalog.Selection = DefaultSelection
+Catalog.DefaultSelection = DefaultSelection
 Catalog.ComponentOrder = ComponentOrder
+Catalog.CategoryDisplayNames = CategoryDisplayNames
+Catalog.OptionOrder = OptionOrder
 
 return table.freeze(Catalog)

@@ -1,7 +1,7 @@
 --!strict
 
 -- RobloxMagicSystem/InstallRobloxMagicSystem.lua が作成する炎VFX専用アダプターです。
--- 旧FireballVFX ModuleScriptの飛行処理は呼ばず、Templatesの見た目だけを複製します。
+-- サーバーは飛行中Projectile、クライアントは一回限りのCast/Explosionを生成します。
 
 local Debris = game:GetService("Debris")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")

@@ -9,8 +9,8 @@ local systemRoot = ReplicatedStorage:WaitForChild("LobbyMagicV2")
 local shared = systemRoot:WaitForChild("Shared")
 local Config = require(shared:WaitForChild("LMV2Config"))
 local SpellCatalog = require(shared:WaitForChild("LMV2SpellCatalog"))
+local FireVFX = require(shared:WaitForChild("LMV2FireVFX"))
 local ManaService = require(script.Parent:WaitForChild("Modules"):WaitForChild("LMV2ManaService"))
-local FireVFX = require(script.Parent:WaitForChild("Modules"):WaitForChild("LMV2FireVFX"))
 
 local remotes = systemRoot:FindFirstChild("Remotes")
 if not remotes then
@@ -53,6 +53,7 @@ local lobbyActionRequest = ensureRemoteEvent("LobbyActionRequest")
 local castSpellRequest = ensureRemoteEvent("CastSpellRequest")
 local stateChanged = ensureRemoteEvent("StateChanged")
 local feedback = ensureRemoteEvent("Feedback")
+local vfxEvent = ensureRemoteEvent("VFXEvent")
 local getSnapshot = ensureRemoteFunction("GetSnapshot")
 
 local runtimeFolder = Workspace:FindFirstChild("LMV2_Runtime")
@@ -62,7 +63,7 @@ if not runtimeFolder then
 	runtimeFolder.Parent = Workspace
 end
 
-local exampleSpell = SpellCatalog.BuildExample()
+local defaultSpell = SpellCatalog.BuildExample()
 local lastLobbyActionAt: { [Player]: number } = {}
 local lastCastRequestAt: { [Player]: number } = {}
 local activeProjectileCount: { [Player]: number } = {}
@@ -77,9 +78,26 @@ local function getState(player: Player): string
 	return if typeof(value) == "string" then value else "Lobby"
 end
 
+local function getPlayerSelection(player: Player): { [string]: string }
+	local selection = SpellCatalog.CopyDefaultSelection()
+	for category, attributeName in pairs(Config.SelectionAttributes) do
+		local value = player:GetAttribute(attributeName)
+		if typeof(value) == "string" then
+			selection[category] = value
+		end
+	end
+	return selection
+end
+
+local function getPlayerSpell(player: Player): { [string]: any }?
+	return SpellCatalog.Build(getPlayerSelection(player))
+end
+
 local function hasExampleSpell(player: Player): boolean
+	local spell = getPlayerSpell(player)
 	return player:GetAttribute(Config.HasSpellAttribute) == true
-		and SpellCatalog.IsExampleSpellKey(player:GetAttribute(Config.SpellKeyAttribute))
+		and spell ~= nil
+		and player:GetAttribute(Config.SpellKeyAttribute) == spell.Key
 end
 
 local function worldRoot(): Instance?
@@ -97,6 +115,7 @@ local function worldStatus(): { [string]: boolean }
 		LobbySpawn = worldPart(Config.World.LobbySpawnName) ~= nil,
 		GroundSpawn = worldPart(Config.World.GroundSpawnName) ~= nil,
 		ForgeConsole = worldPart(Config.World.ForgeConsoleName) ~= nil,
+		ForgeUIZone = worldPart(Config.World.ForgeUIZoneName) ~= nil,
 		ExitGate = worldPart(Config.World.ExitGateName) ~= nil,
 		ReturnGate = worldPart(Config.World.ReturnGateName) ~= nil,
 	}
@@ -104,11 +123,13 @@ end
 
 local function snapshot(player: Player): { [string]: any }
 	local vfxReady, missingVfxObject = FireVFX.GetInstallStatus()
+	local spell = getPlayerSpell(player) or defaultSpell
 	return {
 		SystemId = Config.SystemId,
 		State = getState(player),
 		HasSpell = hasExampleSpell(player),
-		Spell = exampleSpell,
+		Spell = spell,
+		Selection = spell.Selection,
 		Mana = ManaService.Get(player),
 		MaxMana = Config.Mana.Maximum,
 		CooldownEnd = tonumber(player:GetAttribute(Config.CooldownEndAttribute)) or 0,
@@ -153,6 +174,20 @@ local function teleportCharacter(player: Player, destination: BasePart?): boolea
 	return true
 end
 
+local function playerIsInsidePart(player: Player, part: BasePart?): boolean
+	local character = player.Character
+	local root = if character then character:FindFirstChild("HumanoidRootPart") else nil
+	if not part or not root or not root:IsA("BasePart") then
+		return false
+	end
+
+	local localPosition = part.CFrame:PointToObjectSpace(root.Position)
+	local halfSize = part.Size * 0.5
+	return math.abs(localPosition.X) <= halfSize.X
+		and math.abs(localPosition.Y) <= halfSize.Y
+		and math.abs(localPosition.Z) <= halfSize.Z
+end
+
 local function setLobby(player: Player, shouldTeleport: boolean)
 	player:SetAttribute(Config.StateAttribute, "Lobby")
 	player:SetAttribute(Config.CooldownEndAttribute, 0)
@@ -169,23 +204,37 @@ local function setLobby(player: Player, shouldTeleport: boolean)
 	sendSnapshot(player)
 end
 
-local function createExampleSpell(player: Player)
+local function createExampleSpell(player: Player, requestedSelection: any?)
 	if getState(player) ~= "Lobby" then
 		sendFeedback(player, "LobbyOnly", "魔法はロビーの工房で作成してください。")
 		return
 	end
+	if requestedSelection ~= nil and not playerIsInsidePart(player, worldPart(Config.World.ForgeUIZoneName)) then
+		sendFeedback(player, "ForgeZoneOnly", "魔法設定は ForgeUIZone の中で保存してください。")
+		return
+	end
 
+	local selection = if requestedSelection == nil then getPlayerSelection(player) else requestedSelection
+	local spell = SpellCatalog.Build(selection)
+	if not spell then
+		sendFeedback(player, "InvalidSelection", "選択された魔法設定は使用できません。")
+		return
+	end
+
+	for category, attributeName in pairs(Config.SelectionAttributes) do
+		player:SetAttribute(attributeName, spell.Selection[category])
+	end
 	player:SetAttribute(Config.HasSpellAttribute, true)
-	player:SetAttribute(Config.SpellKeyAttribute, exampleSpell.Key)
+	player:SetAttribute(Config.SpellKeyAttribute, spell.Key)
 	ManaService.SetFull(player)
 	sendFeedback(
 		player,
 		"SpellCreated",
 		string.format(
 			"%s を作成しました（マナ%d / クールダウン%.1f秒）",
-			exampleSpell.DisplayName,
-			exampleSpell.ManaCost,
-			exampleSpell.Cooldown
+			spell.DisplayName,
+			spell.ManaCost,
+			spell.Cooldown
 		)
 	)
 	sendSnapshot(player)
@@ -279,7 +328,7 @@ local function findCharacterModel(part: BasePart): Model?
 	return nil
 end
 
-local function damageEnemies(caster: Player, position: Vector3)
+local function damageEnemies(caster: Player, position: Vector3, spell: { [string]: any })
 	local overlap = OverlapParams.new()
 	overlap.FilterType = Enum.RaycastFilterType.Exclude
 	overlap.FilterDescendantsInstances = if caster.Character
@@ -288,7 +337,7 @@ local function damageEnemies(caster: Player, position: Vector3)
 	overlap.MaxParts = Config.Security.MaxExplosionParts
 
 	local damaged: { [Humanoid]: boolean } = {}
-	for _, part in ipairs(Workspace:GetPartBoundsInRadius(position, exampleSpell.ExplosionRadius, overlap)) do
+	for _, part in ipairs(Workspace:GetPartBoundsInRadius(position, spell.ExplosionRadius, overlap)) do
 		local character = findCharacterModel(part)
 		if not character then
 			continue
@@ -305,11 +354,11 @@ local function damageEnemies(caster: Player, position: Vector3)
 		end
 
 		damaged[humanoid] = true
-		humanoid:TakeDamage(exampleSpell.Damage)
+		humanoid:TakeDamage(spell.Damage)
 	end
 end
 
-local function launchFireball(player: Player, requestedAim: Vector3)
+local function launchFireball(player: Player, requestedAim: Vector3, spell: { [string]: any })
 	local character = player.Character
 	local humanoid = if character then character:FindFirstChildOfClass("Humanoid") else nil
 	local root = if character then character:FindFirstChild("HumanoidRootPart") else nil
@@ -322,12 +371,13 @@ local function launchFireball(player: Player, requestedAim: Vector3)
 	if offset.Magnitude < 2 then
 		offset = root.CFrame.LookVector * 12
 	end
-	local distance = math.min(offset.Magnitude, exampleSpell.MaxDistance, Config.Security.MaxAimDistance)
+	local distance = math.min(offset.Magnitude, spell.MaxDistance, Config.Security.MaxAimDistance)
 	local direction = offset.Unit
 	local targetPosition = origin + direction * distance
 
-	FireVFX.Cast(CFrame.lookAt(origin, targetPosition), runtimeFolder)
-	local projectile = FireVFX.CreateProjectile(CFrame.lookAt(origin, targetPosition), runtimeFolder)
+	local castCFrame = CFrame.lookAt(origin, targetPosition)
+	vfxEvent:FireAllClients("Cast", { CFrame = castCFrame })
+	local projectile = FireVFX.CreateProjectile(castCFrame, runtimeFolder)
 	projectile:SetAttribute("LMV2_OwnerUserId", player.UserId)
 	activeProjectileCount[player] = (activeProjectileCount[player] or 0) + 1
 
@@ -358,8 +408,8 @@ local function launchFireball(player: Player, requestedAim: Vector3)
 		end
 
 		if shouldExplode then
-			FireVFX.Explode(position, runtimeFolder)
-			damageEnemies(player, position)
+			vfxEvent:FireAllClients("Explosion", { Position = position })
+			damageEnemies(player, position, spell)
 		end
 	end
 
@@ -375,7 +425,7 @@ local function launchFireball(player: Player, requestedAim: Vector3)
 			return
 		end
 
-		local stepDistance = math.min(exampleSpell.ProjectileSpeed * math.min(deltaTime, 0.1), remaining)
+		local stepDistance = math.min(spell.ProjectileSpeed * math.min(deltaTime, 0.1), remaining)
 		local currentPosition = projectile.Position
 		local result = Workspace:Raycast(currentPosition, direction * stepDistance, raycast)
 		if result then
@@ -400,7 +450,8 @@ local function handleCastRequest(player: Player, payload: any)
 	end
 	lastCastRequestAt[player] = now
 
-	if getState(player) ~= "Ground" or not hasExampleSpell(player) then
+	local spell = getPlayerSpell(player)
+	if getState(player) ~= "Ground" or not hasExampleSpell(player) or not spell then
 		sendFeedback(player, "CannotCastHere", "炎魔法は作成後、グラウンドでのみ使えます。")
 		return
 	end
@@ -444,18 +495,25 @@ local function handleCastRequest(player: Player, payload: any)
 	then
 		return
 	end
-	if not ManaService.Spend(player, exampleSpell.ManaCost) then
-		sendFeedback(player, "ManaLow", string.format("マナが%d必要です。", exampleSpell.ManaCost))
+	if not ManaService.Spend(player, spell.ManaCost) then
+		sendFeedback(player, "ManaLow", string.format("マナが%d必要です。", spell.ManaCost))
 		return
 	end
 
-	player:SetAttribute(Config.CooldownEndAttribute, now + exampleSpell.Cooldown)
-	launchFireball(player, aimPosition)
+	player:SetAttribute(Config.CooldownEndAttribute, now + spell.Cooldown)
+	launchFireball(player, aimPosition, spell)
 	sendSnapshot(player)
 end
 
 local function handleLobbyAction(player: Player, action: any)
-	if typeof(action) ~= "string" then
+	local actionName: string?
+	local requestedSelection: any = nil
+	if typeof(action) == "string" then
+		actionName = action
+	elseif typeof(action) == "table" and typeof(action.Action) == "string" then
+		actionName = action.Action
+		requestedSelection = action.Selection
+	else
 		return
 	end
 
@@ -466,11 +524,11 @@ local function handleLobbyAction(player: Player, action: any)
 	end
 	lastLobbyActionAt[player] = now
 
-	if action == "CreateExampleSpell" then
-		createExampleSpell(player)
-	elseif action == "EnterGround" then
+	if actionName == "CreateSpell" then
+		createExampleSpell(player, requestedSelection)
+	elseif actionName == "EnterGround" then
 		enterGround(player)
-	elseif action == "ReturnLobby" and getState(player) == "Ground" then
+	elseif actionName == "ReturnLobby" and getState(player) == "Ground" then
 		setLobby(player, true)
 		sendFeedback(player, "ReturnedLobby", "ロビーへ戻りました。")
 	end
@@ -574,6 +632,9 @@ local function onPlayerAdded(player: Player)
 	player:SetAttribute(Config.HasSpellAttribute, false)
 	player:SetAttribute(Config.SpellKeyAttribute, "")
 	player:SetAttribute(Config.CooldownEndAttribute, 0)
+	for category, attributeName in pairs(Config.SelectionAttributes) do
+		player:SetAttribute(attributeName, SpellCatalog.DefaultSelection[category])
+	end
 	ManaService.AddPlayer(player)
 
 	player.CharacterAdded:Connect(function(character)
@@ -606,6 +667,7 @@ local function isDirectWorldChild(instance: Instance): boolean
 	return instance.Name == Config.World.LobbySpawnName
 		or instance.Name == Config.World.GroundSpawnName
 		or instance.Name == Config.World.ForgeConsoleName
+		or instance.Name == Config.World.ForgeUIZoneName
 		or instance.Name == Config.World.ExitGateName
 		or instance.Name == Config.World.ReturnGateName
 end
