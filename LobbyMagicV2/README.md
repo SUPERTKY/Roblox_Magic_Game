@@ -45,9 +45,11 @@ ReplicatedStorage
 
 炎VFXが不足している場合、Lobby Magic V2はマナを消費せず発動を拒否し、OutputとUIへ不足パスを表示します。
 
+発射時の一回限りの粒子と着弾爆発は、`VFXEvent`を受け取った各クライアントがローカルで `Emit()` します。StudioではServer表示ではなくClient表示で確認してください。飛行中のProjectileとダメージ判定は引き続きサーバーが管理します。
+
 ## Studioで作成する3D構造
 
-`Workspace`へ次の構造を**完全一致の名前**で作成してください。5個の中身はすべて `Part`、`MeshPart`、`SpawnLocation`などの `BasePart` にします。
+`Workspace`へ次の構造を**完全一致の名前**で作成してください。6個の中身はすべて `Part`、`MeshPart`、`SpawnLocation`などの `BasePart` にします。
 
 ```text
 Workspace
@@ -55,6 +57,7 @@ Workspace
    ├─ LobbySpawn (BasePart)
    ├─ GroundSpawn (BasePart)
    ├─ ForgeConsole (BasePart)
+   ├─ ForgeUIZone (BasePart)
    ├─ ExitGate (BasePart)
    └─ ReturnGate (BasePart)
 ```
@@ -64,6 +67,7 @@ Workspace
 | `LobbySpawn` | 参加・敗北・帰還時の位置 | `Anchored=true`。見せない場合は透明化 |
 | `GroundSpawn` | 出撃時の位置 | `Anchored=true`。床より少し上へ配置 |
 | `ForgeConsole` | 最初の炎魔法を作る場所 | プレイヤーが12stud以内へ近づける場所 |
+| `ForgeUIZone` | 設定UIを表示する範囲 | `Anchored=true`、`CanCollide=false`、`Transparency=1`。工房を覆う大きさにする |
 | `ExitGate` | ロビーからグラウンドへ出る場所 | プレイヤーが12stud以内へ近づける場所 |
 | `ReturnGate` | グラウンドからロビーへ戻る場所 | グラウンド側へ配置 |
 
@@ -106,18 +110,27 @@ UIが無くても次の操作は残ります。
 
 `LMV2UI.client.lua`は画面表示だけを担当します。削除してもサーバー処理や魔法入力は停止しません。
 
+## 設定UIの表示範囲
+
+設定UIはロビーにいるだけでは表示されません。プレイヤーの `HumanoidRootPart` が `ForgeUIZone` の箱型範囲内へ入ったときだけ表示され、外へ出ると閉じます。回転させた `ForgeUIZone` にも対応します。
+
+`ForgeUIZone` が無くても、`ForgeConsole` のPromptから既定設定の魔法を作れるため、UIなしの進行は止まりません。
+
 ## 生成UIに含まれるもの
 
 Studioで `ScreenGui` を作成する必要はありません。`LMV2UI.client.lua`が次を生成します。
 
 - ロビーの進行表示「魔法作成 → 出撃 → バトル」
-- ファイアボムの組み合わせ表示
+- 属性・生成方法・対象・発生場所・攻撃方法の左右切替
+- 選択中のファイアボム設定表示
 - マナ・クールダウンの足し算表示
 - 「炎魔法を作る」ボタン
 - 「グラウンドへ出る」ボタン
 - 戦闘中のマナゲージ
 - クールダウン・マナ不足・発動可能表示
 - 成功・エラーの一時メッセージ
+
+現在は各項目に1個の選択肢しかありません。左右ボタンは表示され、押すと「現在1種類だけ」と案内します。`LMV2SpellCatalog.lua` の `Components` と `OptionOrder` に選択肢を追加すると、同じUIで循環切替できます。
 
 3D側のPromptと同じサーバー関数を使うため、UIからだけ特別な処理は行いません。
 
@@ -127,8 +140,9 @@ Studioで `ScreenGui` を作成する必要はありません。`LMV2UI.client.l
 
 | Remote | 方向 | 内容 |
 |---|---|---|
-| `LobbyActionRequest` | Client → Server | `"CreateExampleSpell"`、`"EnterGround"`、`"ReturnLobby"` |
+| `LobbyActionRequest` | Client → Server | `{ Action = "CreateSpell", Selection = {...} }`、`"EnterGround"`、`"ReturnLobby"` |
 | `CastSpellRequest` | Client → Server | `{ AimPosition = Vector3 }`。数値は送らない |
+| `VFXEvent` | Server → Client | `Cast`・`Explosion`の位置。クライアント側で一回限りのParticleを発生 |
 | `StateChanged` | Server → Client | 現在の状態・魔法・マナなどのSnapshot |
 | `Feedback` | Server → Client | `{ Code, Message, ServerTime }` |
 | `GetSnapshot` | Client → Server | 初回表示用のSnapshotを取得 |
@@ -143,6 +157,11 @@ UI表示にはPlayerの次の属性も利用できます。
 | `LMV2_Mana` | number | 現在マナ |
 | `LMV2_MaxMana` | number | 最大マナ |
 | `LMV2_CooldownEnd` | number | `Workspace:GetServerTimeNow()`基準の終了時刻 |
+| `LMV2_SelectedAttribute` | string | 選択中の属性 |
+| `LMV2_SelectedCreation` | string | 選択中の生成方法 |
+| `LMV2_SelectedTarget` | string | 選択中の対象 |
+| `LMV2_SelectedOrigin` | string | 選択中の発生場所 |
+| `LMV2_SelectedAttack` | string | 選択中の攻撃方法 |
 
 クライアントからマナ消費、ダメージ、爆発半径、クールダウンを送らないでください。サーバーが固定定義から再計算します。
 
@@ -175,15 +194,17 @@ EnemyDummy (Model)
 ## テスト手順
 
 1. Play開始時に `LobbySpawn`へ移動する
-2. 工房PromptまたはUIでファイアボムを作る
-3. 表示がマナ37・クールダウン3.5秒になる
-4. ExitGateから`GroundSpawn`へ移動する
-5. `InstallRobloxMagicSystem.lua` で作った発射・飛行・爆発エフェクトが表示される
-6. 敵NPCの近くを狙って発動し、火球が指定地点または障害物で爆発する
-7. 半径内の敵だけが25ダメージを受ける
-8. マナ不足・クールダウン中はサーバーに拒否される
-9. ReturnGateでLobbySpawnへ戻る
-10. グラウンドで倒された場合も次のRespawnでロビーへ戻る
+2. `ForgeUIZone`の外では設定UIが非表示、内側では表示される
+3. 5項目の左右ボタンが表示され、現在1種類だけという案内が出る
+4. 工房PromptまたはUIでファイアボムを作る
+5. 表示がマナ37・クールダウン3.5秒になる
+6. ExitGateから`GroundSpawn`へ移動する
+7. StudioのClient表示で、発射時と着弾時のエフェクトが表示される
+8. 敵NPCの近くを狙って発動し、火球が指定地点または障害物で爆発する
+9. 半径内の敵だけが25ダメージを受ける
+10. マナ不足・クールダウン中はサーバーに拒否される
+11. ReturnGateでLobbySpawnへ戻る
+12. グラウンドで倒された場合も次のRespawnでロビーへ戻る
 
 ## 今回まだ入れていないもの
 

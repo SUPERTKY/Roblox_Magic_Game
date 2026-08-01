@@ -12,10 +12,20 @@ local Workspace = game:GetService("Workspace")
 
 local player = Players.LocalPlayer
 local systemRoot = ReplicatedStorage:WaitForChild("LobbyMagicV2")
-local Config = require(systemRoot:WaitForChild("Shared"):WaitForChild("LMV2Config"))
+local shared = systemRoot:WaitForChild("Shared")
+local Config = require(shared:WaitForChild("LMV2Config"))
+local FireVFX = require(shared:WaitForChild("LMV2FireVFX"))
 local remotes = systemRoot:WaitForChild("Remotes")
 local castSpellRequest = remotes:WaitForChild("CastSpellRequest") :: RemoteEvent
 local feedback = remotes:WaitForChild("Feedback") :: RemoteEvent
+local vfxEvent = remotes:WaitForChild("VFXEvent") :: RemoteEvent
+
+local clientVfxFolder = Workspace:FindFirstChild(string.format("LMV2_ClientVFX_%d", player.UserId))
+if not clientVfxFolder then
+	clientVfxFolder = Instance.new("Folder")
+	clientVfxFolder.Name = string.format("LMV2_ClientVFX_%d", player.UserId)
+	clientVfxFolder.Parent = Workspace
+end
 
 local ACTION_CAST = "LMV2_CastFirebomb"
 local lastTouchViewportPosition: Vector2? = nil
@@ -108,6 +118,23 @@ end
 
 player:GetAttributeChangedSignal(Config.StateAttribute):Connect(updateTouchButton)
 task.defer(updateTouchButton)
+
+vfxEvent.OnClientEvent:Connect(function(kind: any, payload: any)
+	if typeof(kind) ~= "string" or typeof(payload) ~= "table" then
+		return
+	end
+
+	local ok, message = pcall(function()
+		if kind == "Cast" and typeof(payload.CFrame) == "CFrame" then
+			FireVFX.Cast(payload.CFrame, clientVfxFolder)
+		elseif kind == "Explosion" and typeof(payload.Position) == "Vector3" then
+			FireVFX.Explode(payload.Position, clientVfxFolder)
+		end
+	end)
+	if not ok then
+		warn(string.format("[LobbyMagicV2] クライアントVFXの表示に失敗しました: %s", tostring(message)))
+	end
+end)
 
 feedback.OnClientEvent:Connect(function(payload: any)
 	if typeof(payload) ~= "table" or typeof(payload.Message) ~= "string" then

@@ -1,7 +1,7 @@
 --!strict
 
--- StudioでScreenGuiを手作業しなくても使える、交換可能なUIです。
--- このLocalScriptを外しても、サーバー・ProximityPrompt・LMV2Clientは動き続けます。
+-- ForgeUIZone内だけで表示される、交換可能な魔法設定UIです。
+-- 各項目は選択肢を追加したとき、そのまま左右ボタンで循環できます。
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -24,13 +24,6 @@ local stateChanged = remotes:WaitForChild("StateChanged") :: RemoteEvent
 local feedback = remotes:WaitForChild("Feedback") :: RemoteEvent
 local getSnapshot = remotes:WaitForChild("GetSnapshot") :: RemoteFunction
 
-local spell = SpellCatalog.BuildExample()
-local playerGui = player:WaitForChild("PlayerGui")
-local oldGui = playerGui:FindFirstChild("LMV2_UI")
-if oldGui then
-	oldGui:Destroy()
-end
-
 local COLORS = {
 	Background = Color3.fromRGB(18, 17, 24),
 	Panel = Color3.fromRGB(31, 28, 39),
@@ -43,6 +36,19 @@ local COLORS = {
 	Disabled = Color3.fromRGB(78, 72, 80),
 	Mana = Color3.fromRGB(74, 168, 255),
 }
+
+local selection = SpellCatalog.CopyDefaultSelection()
+local selectedSpell = SpellCatalog.Build(selection) or SpellCatalog.BuildExample()
+local selectorValues: { [string]: TextLabel } = {}
+local zoneCheckElapsed = 0
+local inForgeZone = false
+local updateSelectionDisplay: () -> ()
+
+local playerGui = player:WaitForChild("PlayerGui")
+local oldGui = playerGui:FindFirstChild("LMV2_UI")
+if oldGui then
+	oldGui:Destroy()
+end
 
 local gui = Instance.new("ScreenGui")
 gui.Name = "LMV2_UI"
@@ -89,29 +95,29 @@ local function makeButton(parent: Instance, name: string, text: string): TextBut
 	button.Font = Enum.Font.GothamBold
 	button.Text = text
 	button.TextColor3 = COLORS.Cream
-	button.TextSize = 17
+	button.TextSize = 16
 	button.Parent = parent
-	addCorner(button, 12)
-	addStroke(button, COLORS.OrangeBright, 0.45, 1)
+	addCorner(button, 10)
+	addStroke(button, COLORS.OrangeBright, 0.5, 1)
 	return button
 end
 
--- ロビー用の魔法工房パネル
+-- 工房設定パネル
 local lobbyPanel = Instance.new("Frame")
 lobbyPanel.Name = "LobbyPanel"
 lobbyPanel.AnchorPoint = Vector2.new(0.5, 0.5)
-lobbyPanel.Position = UDim2.fromScale(0.5, 0.52)
-lobbyPanel.Size = UDim2.new(0.92, 0, 0, 430)
+lobbyPanel.Position = UDim2.fromScale(0.5, 0.5)
+lobbyPanel.Size = UDim2.fromOffset(600, 560)
 lobbyPanel.BackgroundColor3 = COLORS.Panel
 lobbyPanel.BorderSizePixel = 0
+lobbyPanel.Visible = false
 lobbyPanel.Parent = gui
 addCorner(lobbyPanel, 18)
 addStroke(lobbyPanel, COLORS.Orange, 0.35, 2)
 
-local lobbyConstraint = Instance.new("UISizeConstraint")
-lobbyConstraint.MinSize = Vector2.new(300, 390)
-lobbyConstraint.MaxSize = Vector2.new(580, 430)
-lobbyConstraint.Parent = lobbyPanel
+local panelScale = Instance.new("UIScale")
+panelScale.Name = "ResponsiveScale"
+panelScale.Parent = lobbyPanel
 
 local accent = Instance.new("Frame")
 accent.Name = "Accent"
@@ -121,8 +127,7 @@ accent.BorderSizePixel = 0
 accent.Parent = lobbyPanel
 addCorner(accent, 18)
 
-local title =
-	makeLabel(lobbyPanel, "Title", "🔥  LOBBY MAGIC FORGE V2", UDim2.new(1, -40, 0, 36), UDim2.fromOffset(20, 20))
+local title = makeLabel(lobbyPanel, "Title", "🔥  MAGIC FORGE", UDim2.new(1, -40, 0, 34), UDim2.fromOffset(20, 18))
 title.Font = Enum.Font.GothamBlack
 title.TextColor3 = COLORS.OrangeBright
 title.TextSize = 22
@@ -130,99 +135,167 @@ title.TextSize = 22
 local subtitle = makeLabel(
 	lobbyPanel,
 	"Subtitle",
-	"組み合わせて、試して、グラウンドへ。",
-	UDim2.new(1, -40, 0, 24),
-	UDim2.fromOffset(20, 56)
+	"項目を選んで、現在の設定を魔法として保存します。",
+	UDim2.new(1, -40, 0, 22),
+	UDim2.fromOffset(20, 53)
 )
 subtitle.TextColor3 = COLORS.Muted
-subtitle.TextSize = 14
+subtitle.TextSize = 13
 
 local steps = makeLabel(
 	lobbyPanel,
 	"Steps",
-	"1  魔法作成     →     2  出撃     →     3  バトル",
+	"1  設定     →     2  魔法作成     →     3  出撃",
 	UDim2.new(1, -40, 0, 34),
-	UDim2.fromOffset(20, 91)
+	UDim2.fromOffset(20, 84)
 )
 steps.BackgroundTransparency = 0
 steps.BackgroundColor3 = COLORS.Background
-steps.TextColor3 = COLORS.Cream
 steps.TextXAlignment = Enum.TextXAlignment.Center
 steps.Font = Enum.Font.GothamBold
 steps.TextSize = 14
 addCorner(steps, 10)
 
-local spellCard = Instance.new("Frame")
-spellCard.Name = "SpellCard"
-spellCard.Position = UDim2.fromOffset(20, 139)
-spellCard.Size = UDim2.new(1, -40, 0, 154)
-spellCard.BackgroundColor3 = COLORS.PanelLight
-spellCard.BorderSizePixel = 0
-spellCard.Parent = lobbyPanel
-addCorner(spellCard, 14)
+local selectorContainer = Instance.new("Frame")
+selectorContainer.Name = "Selectors"
+selectorContainer.Position = UDim2.fromOffset(20, 130)
+selectorContainer.Size = UDim2.new(1, -40, 0, 228)
+selectorContainer.BackgroundTransparency = 1
+selectorContainer.Parent = lobbyPanel
 
-local spellName =
-	makeLabel(spellCard, "SpellName", spell.DisplayName, UDim2.new(1, -24, 0, 30), UDim2.fromOffset(14, 12))
+local selectorLayout = Instance.new("UIListLayout")
+selectorLayout.FillDirection = Enum.FillDirection.Vertical
+selectorLayout.Padding = UDim.new(0, 6)
+selectorLayout.SortOrder = Enum.SortOrder.LayoutOrder
+selectorLayout.Parent = selectorContainer
+
+local toast: TextLabel
+
+local function showToast(message: string)
+	toast.Text = message
+	local version = (tonumber(toast:GetAttribute("Version")) or 0) + 1
+	toast:SetAttribute("Version", version)
+	TweenService:Create(toast, TweenInfo.new(0.16), {
+		BackgroundTransparency = 0.08,
+		TextTransparency = 0,
+	}):Play()
+	task.delay(2.5, function()
+		if toast:GetAttribute("Version") ~= version then
+			return
+		end
+		TweenService:Create(toast, TweenInfo.new(0.25), {
+			BackgroundTransparency = 1,
+			TextTransparency = 1,
+		}):Play()
+	end)
+end
+
+local function cycleSelection(category: string, direction: number)
+	local options = SpellCatalog.GetOptionIds(category)
+	if #options == 0 then
+		return
+	end
+	if #options == 1 then
+		showToast(string.format("%sは現在1種類だけです。", SpellCatalog.CategoryDisplayNames[category]))
+		return
+	end
+
+	local currentIndex = table.find(options, selection[category]) or 1
+	local nextIndex = ((currentIndex - 1 + direction) % #options) + 1
+	selection[category] = options[nextIndex]
+	updateSelectionDisplay()
+end
+
+for order, category in ipairs(SpellCatalog.ComponentOrder) do
+	local row = Instance.new("Frame")
+	row.Name = category
+	row.LayoutOrder = order
+	row.Size = UDim2.new(1, 0, 0, 40)
+	row.BackgroundColor3 = COLORS.PanelLight
+	row.BorderSizePixel = 0
+	row.Parent = selectorContainer
+	addCorner(row, 10)
+
+	local categoryName = makeLabel(
+		row,
+		"Category",
+		SpellCatalog.CategoryDisplayNames[category],
+		UDim2.fromOffset(96, 40),
+		UDim2.fromOffset(12, 0)
+	)
+	categoryName.Font = Enum.Font.GothamBold
+	categoryName.TextColor3 = COLORS.Muted
+	categoryName.TextSize = 13
+
+	local previous = makeButton(row, "Previous", "‹")
+	previous.Position = UDim2.fromOffset(110, 5)
+	previous.Size = UDim2.fromOffset(34, 30)
+	previous.TextSize = 22
+
+	local value = makeLabel(row, "Value", "", UDim2.new(1, -198, 1, 0), UDim2.fromOffset(151, 0))
+	value.Font = Enum.Font.GothamBold
+	value.TextXAlignment = Enum.TextXAlignment.Center
+	value.TextSize = if category == "Attack" then 12 else 14
+	value.TextWrapped = true
+	selectorValues[category] = value
+
+	local nextButton = makeButton(row, "Next", "›")
+	nextButton.AnchorPoint = Vector2.new(1, 0)
+	nextButton.Position = UDim2.new(1, -8, 0, 5)
+	nextButton.Size = UDim2.fromOffset(34, 30)
+	nextButton.TextSize = 22
+
+	previous.Activated:Connect(function()
+		cycleSelection(category, -1)
+	end)
+	nextButton.Activated:Connect(function()
+		cycleSelection(category, 1)
+	end)
+end
+
+local spellSummary = Instance.new("Frame")
+spellSummary.Name = "SpellSummary"
+spellSummary.Position = UDim2.fromOffset(20, 370)
+spellSummary.Size = UDim2.new(1, -40, 0, 82)
+spellSummary.BackgroundColor3 = COLORS.Background
+spellSummary.BorderSizePixel = 0
+spellSummary.Parent = lobbyPanel
+addCorner(spellSummary, 12)
+
+local spellName = makeLabel(spellSummary, "SpellName", "", UDim2.new(0.45, -16, 0, 28), UDim2.fromOffset(14, 10))
 spellName.Font = Enum.Font.GothamBlack
 spellName.TextColor3 = COLORS.OrangeBright
-spellName.TextSize = 21
+spellName.TextSize = 19
 
-local recipe = makeLabel(
-	spellCard,
-	"Recipe",
-	"火  ×  生成  ×  敵  ×  自分から  ×  指定地点へ投げて爆発",
-	UDim2.new(1, -28, 0, 46),
-	UDim2.fromOffset(14, 45)
-)
-recipe.TextWrapped = true
-recipe.TextColor3 = COLORS.Cream
-recipe.TextSize = 14
-
-local cost = makeLabel(
-	spellCard,
-	"Cost",
-	string.format(
-		"🔥 ダメージ %d     ◉ マナ %d     ◷ %.1f秒",
-		spell.Damage,
-		spell.ManaCost,
-		spell.Cooldown
-	),
-	UDim2.new(1, -28, 0, 28),
-	UDim2.fromOffset(14, 96)
-)
+local cost = makeLabel(spellSummary, "Cost", "", UDim2.new(0.55, -16, 0, 28), UDim2.new(0.45, 0, 0, 10))
 cost.Font = Enum.Font.GothamBold
 cost.TextColor3 = COLORS.OrangeBright
-cost.TextSize = 14
+cost.TextXAlignment = Enum.TextXAlignment.Right
+cost.TextSize = 13
 
-local formula = makeLabel(
-	spellCard,
-	"Formula",
-	"マナ 5+8+6+4+0+14 = 37   /   CD 1.0+0.5+0.4+0.2+0+1.4 = 3.5",
-	UDim2.new(1, -28, 0, 22),
-	UDim2.fromOffset(14, 124)
-)
+local formula = makeLabel(spellSummary, "Formula", "", UDim2.new(1, -28, 0, 32), UDim2.fromOffset(14, 42))
 formula.TextColor3 = COLORS.Muted
-formula.TextSize = 12
+formula.TextSize = 11
+formula.TextWrapped = true
 
-local forgeButton = makeButton(lobbyPanel, "CreateSpellButton", "炎魔法を作る")
-forgeButton.Position = UDim2.new(0, 20, 1, -116)
+local forgeButton = makeButton(lobbyPanel, "CreateSpellButton", "この設定で魔法を作る")
+forgeButton.Position = UDim2.fromOffset(20, 466)
 forgeButton.Size = UDim2.new(0.5, -26, 0, 48)
 
 local enterButton = makeButton(lobbyPanel, "EnterGroundButton", "グラウンドへ出る")
-enterButton.Position = UDim2.new(0.5, 6, 1, -116)
+enterButton.Position = UDim2.new(0.5, 6, 0, 466)
 enterButton.Size = UDim2.new(0.5, -26, 0, 48)
 
 local lobbyHint = makeLabel(
 	lobbyPanel,
 	"Hint",
-	"UIを閉じても ForgeConsole と ExitGate のProximityPromptで操作できます。",
-	UDim2.new(1, -40, 0, 42),
-	UDim2.new(0, 20, 1, -58)
+	"このUIは ForgeUIZone の中にいる間だけ表示されます。",
+	UDim2.new(1, -40, 0, 26),
+	UDim2.fromOffset(20, 523)
 )
-lobbyHint.TextWrapped = true
 lobbyHint.TextColor3 = COLORS.Muted
-lobbyHint.TextSize = 12
 lobbyHint.TextXAlignment = Enum.TextXAlignment.Center
+lobbyHint.TextSize = 12
 
 -- グラウンド用HUD
 local hud = Instance.new("Frame")
@@ -232,6 +305,7 @@ hud.Size = UDim2.fromOffset(330, 126)
 hud.BackgroundColor3 = COLORS.Panel
 hud.BackgroundTransparency = 0.08
 hud.BorderSizePixel = 0
+hud.Visible = false
 hud.Parent = gui
 addCorner(hud, 15)
 addStroke(hud, COLORS.Orange, 0.4, 1)
@@ -244,7 +318,6 @@ hudTitle.TextSize = 18
 
 local manaText = makeLabel(hud, "ManaText", "MANA 100 / 100", UDim2.new(1, -28, 0, 20), UDim2.fromOffset(14, 43))
 manaText.Font = Enum.Font.GothamBold
-manaText.TextColor3 = COLORS.Cream
 manaText.TextSize = 13
 
 local manaBack = Instance.new("Frame")
@@ -280,8 +353,7 @@ local returnHint =
 returnHint.TextColor3 = COLORS.Muted
 returnHint.TextSize = 11
 
--- 一時メッセージ
-local toast = Instance.new("TextLabel")
+toast = Instance.new("TextLabel")
 toast.Name = "Toast"
 toast.AnchorPoint = Vector2.new(0.5, 1)
 toast.Position = UDim2.new(0.5, 0, 1, -36)
@@ -301,38 +373,87 @@ local toastConstraint = Instance.new("UISizeConstraint")
 toastConstraint.MaxSize = Vector2.new(560, 48)
 toastConstraint.Parent = toast
 
-local toastVersion = 0
-local function showToast(message: string)
-	toastVersion += 1
-	local version = toastVersion
-	toast.Text = message
-	TweenService:Create(toast, TweenInfo.new(0.16), {
-		BackgroundTransparency = 0.08,
-		TextTransparency = 0,
-	}):Play()
-	task.delay(2.8, function()
-		if version ~= toastVersion then
-			return
-		end
-		TweenService:Create(toast, TweenInfo.new(0.25), {
-			BackgroundTransparency = 1,
-			TextTransparency = 1,
-		}):Play()
-	end)
-end
-
 local function hasSpell(): boolean
 	return player:GetAttribute(Config.HasSpellAttribute) == true
 end
 
+updateSelectionDisplay = function()
+	selectedSpell = SpellCatalog.Build(selection) or selectedSpell
+	for _, category in ipairs(SpellCatalog.ComponentOrder) do
+		local component = SpellCatalog.GetComponent(category, selection[category])
+		local value = selectorValues[category]
+		if component and value then
+			value.Text = component.DisplayName
+		end
+	end
+
+	spellName.Text = selectedSpell.DisplayName
+	cost.Text = string.format(
+		"ダメージ %d   マナ %d   CD %.1f秒",
+		selectedSpell.Damage,
+		selectedSpell.ManaCost,
+		selectedSpell.Cooldown
+	)
+	local manaParts = {}
+	local cooldownParts = {}
+	for _, item in ipairs(selectedSpell.CostBreakdown) do
+		table.insert(manaParts, tostring(item.Mana))
+		table.insert(cooldownParts, string.format("%.1f", item.Cooldown))
+	end
+	formula.Text = string.format(
+		"マナ %s = %d   /   CD %s = %.1f",
+		table.concat(manaParts, "+"),
+		selectedSpell.ManaCost,
+		table.concat(cooldownParts, "+"),
+		selectedSpell.Cooldown
+	)
+end
+
+local function loadSelection(source: any)
+	if typeof(source) ~= "table" then
+		return
+	end
+	local candidate: { [string]: string } = {}
+	for _, category in ipairs(SpellCatalog.ComponentOrder) do
+		candidate[category] = source[category]
+	end
+	if SpellCatalog.Build(candidate) then
+		selection = candidate
+		updateSelectionDisplay()
+	end
+end
+
+local function findForgeZone(): BasePart?
+	local world = Workspace:FindFirstChild(Config.World.FolderName)
+	local zone = if world then world:FindFirstChild(Config.World.ForgeUIZoneName) else nil
+	return if zone and zone:IsA("BasePart") then zone else nil
+end
+
+local function playerIsInsideForgeZone(): boolean
+	if player:GetAttribute(Config.StateAttribute) ~= "Lobby" then
+		return false
+	end
+	local zone = findForgeZone()
+	local character = player.Character
+	local root = if character then character:FindFirstChild("HumanoidRootPart") else nil
+	if not zone or not root or not root:IsA("BasePart") then
+		return false
+	end
+
+	local localPosition = zone.CFrame:PointToObjectSpace(root.Position)
+	local halfSize = zone.Size * 0.5
+	return math.abs(localPosition.X) <= halfSize.X
+		and math.abs(localPosition.Y) <= halfSize.Y
+		and math.abs(localPosition.Z) <= halfSize.Z
+end
+
 local function updateMode()
-	local state = player:GetAttribute(Config.StateAttribute)
-	local inGround = state == "Ground"
-	lobbyPanel.Visible = not inGround
+	local inGround = player:GetAttribute(Config.StateAttribute) == "Ground"
+	lobbyPanel.Visible = not inGround and inForgeZone
 	hud.Visible = inGround
 
 	local ready = hasSpell()
-	forgeButton.Text = if ready then "✓ 炎魔法 作成済み" else "炎魔法を作る"
+	forgeButton.Text = if ready then "設定を保存し直す" else "この設定で魔法を作る"
 	forgeButton.BackgroundColor3 = if ready then COLORS.Green else COLORS.Orange
 	enterButton.Active = ready
 	enterButton.AutoButtonColor = ready
@@ -340,26 +461,28 @@ local function updateMode()
 	enterButton.TextTransparency = if ready then 0 else 0.25
 end
 
-local function request(action: string)
-	lobbyActionRequest:FireServer(action)
-end
-
 forgeButton.Activated:Connect(function()
-	request("CreateExampleSpell")
+	lobbyActionRequest:FireServer({
+		Action = "CreateSpell",
+		Selection = table.clone(selection),
+	})
 end)
 
 enterButton.Activated:Connect(function()
 	if hasSpell() then
-		request("EnterGround")
+		lobbyActionRequest:FireServer("EnterGround")
 	else
-		showToast("先に炎魔法を作ってください。")
+		showToast("先に現在の設定で魔法を作ってください。")
 	end
 end)
 
 player:GetAttributeChangedSignal(Config.StateAttribute):Connect(updateMode)
 player:GetAttributeChangedSignal(Config.HasSpellAttribute):Connect(updateMode)
 
-stateChanged.OnClientEvent:Connect(function(_snapshot: any)
+stateChanged.OnClientEvent:Connect(function(snapshot: any)
+	if typeof(snapshot) == "table" then
+		loadSelection(snapshot.Selection)
+	end
 	updateMode()
 end)
 
@@ -369,11 +492,25 @@ feedback.OnClientEvent:Connect(function(payload: any)
 	end
 end)
 
-RunService.RenderStepped:Connect(function()
+RunService.RenderStepped:Connect(function(deltaTime: number)
+	zoneCheckElapsed += deltaTime
+	if zoneCheckElapsed >= 0.1 then
+		zoneCheckElapsed = 0
+		local nextInside = playerIsInsideForgeZone()
+		if nextInside ~= inForgeZone then
+			inForgeZone = nextInside
+			updateMode()
+		end
+	end
+
+	local camera = Workspace.CurrentCamera
+	if camera then
+		panelScale.Scale = math.min(1, camera.ViewportSize.X / 640, camera.ViewportSize.Y / 600)
+	end
+
 	if not hud.Visible then
 		return
 	end
-
 	local mana = tonumber(player:GetAttribute(Config.ManaAttribute)) or 0
 	local maximum = tonumber(player:GetAttribute(Config.MaxManaAttribute)) or Config.Mana.Maximum
 	local ratio = if maximum > 0 then math.clamp(mana / maximum, 0, 1) else 0
@@ -385,8 +522,8 @@ RunService.RenderStepped:Connect(function()
 	if remaining > 0 then
 		castStatus.Text = string.format("クールダウン  %.1f秒", remaining)
 		castStatus.TextColor3 = COLORS.OrangeBright
-	elseif mana + 1e-4 < spell.ManaCost then
-		castStatus.Text = string.format("マナ回復中  |  必要 %d", spell.ManaCost)
+	elseif mana + 1e-4 < selectedSpell.ManaCost then
+		castStatus.Text = string.format("マナ回復中  |  必要 %d", selectedSpell.ManaCost)
 		castStatus.TextColor3 = COLORS.Mana
 	else
 		castStatus.Text = "発動可能  |  左クリック / F / R2 / FIRE"
@@ -399,8 +536,10 @@ task.spawn(function()
 		return getSnapshot:InvokeServer()
 	end)
 	if ok and typeof(result) == "table" then
-		updateMode()
+		loadSelection(result.Selection)
 	end
+	updateMode()
 end)
 
+updateSelectionDisplay()
 updateMode()
