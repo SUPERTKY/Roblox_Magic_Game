@@ -1,0 +1,42 @@
+{
+  "name": "LobbyMagicV2",
+  "tree": {
+    "$className": "DataModel",
+    "ReplicatedStorage": {
+      "LobbyMagicV2": {
+        "$className": "Folder",
+        "Shared": {
+          "$path": "src/ReplicatedStorage/LobbyMagicV2/Shared"
+        },
+        "Remotes": {
+          "$className": "Folder",
+          "LobbyActionRequest": {
+            "$className": "RemoteEvent"
+          },
+          "CastSpellRequest": {
+            "$className": "RemoteEvent"
+          },
+          "StateChanged": {
+            "$className": "RemoteEvent"
+          },
+          "Feedback": {
+            "$className": "RemoteEvent"
+          },
+          "GetSnapshot": {
+            "$className": "RemoteFunction"
+          }
+        }
+      }
+    },
+    "ServerScriptService": {
+      "LobbyMagicV2": {
+        "$path": "src/ServerScriptService/LobbyMagicV2"
+      }
+    },
+    "StarterPlayer": {
+      "StarterPlayerScripts": {
+        "$path": "src/StarterPlayer/StarterPlayerScripts"
+      }
+    }
+  }
+}
