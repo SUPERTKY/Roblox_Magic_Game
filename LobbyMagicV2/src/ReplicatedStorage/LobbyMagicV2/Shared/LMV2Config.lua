@@ -11,13 +11,30 @@ local Config = {
 	ManaAttribute = "LMV2_Mana",
 	MaxManaAttribute = "LMV2_MaxMana",
 	CooldownEndAttribute = "LMV2_CooldownEnd",
+	ActiveSlotAttribute = "LMV2_ActiveSpellSlot",
+	DataReadyAttribute = "LMV2_DataReady",
 	TeamAttribute = "LMV2_Team",
 	SelectionAttributes = {
 		Attribute = "LMV2_SelectedAttribute",
 		Creation = "LMV2_SelectedCreation",
 		Target = "LMV2_SelectedTarget",
 		Origin = "LMV2_SelectedOrigin",
+		ProjectileCount = "LMV2_SelectedProjectileCount",
+		ProjectileSize = "LMV2_SelectedProjectileSize",
+		ProjectileSpeed = "LMV2_SelectedProjectileSpeed",
 		Attack = "LMV2_SelectedAttack",
+	},
+
+	Inventory = {
+		MaximumSpells = 5,
+		MaximumNameLength = 20,
+		MaximumManaCost = 80,
+	},
+
+	Persistence = {
+		DataStoreName = "LobbyMagicV2_Spells_v1",
+		DataVersion = 1,
+		AutosaveSeconds = 60,
 	},
 
 	-- falseにするとLobbyMagicV2UIは何も作りません。
@@ -47,7 +64,8 @@ local Config = {
 		MinCastInterval = 0.18,
 		LobbyActionInterval = 0.25,
 		MaxExplosionParts = 120,
-		MaxProjectilesPerPlayer = 2,
+		MaxProjectilesPerCast = 5,
+		MaxProjectilesPerPlayer = 6,
 	},
 }
 
