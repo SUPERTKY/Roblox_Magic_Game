@@ -493,16 +493,107 @@ local function findCharacterModel(part: BasePart): Model?
 	return nil
 end
 
-local function damageEnemies(caster: Player, position: Vector3, spell: { [string]: any })
+local function isAlly(caster: Player, targetPlayer: Player?, targetCharacter: Model): boolean
+	if targetPlayer == caster or targetCharacter == caster.Character then
+		return true
+	end
+	if targetPlayer and not caster.Neutral and not targetPlayer.Neutral and caster.Team == targetPlayer.Team then
+		return true
+	end
+	local casterTeam = getTeamId(caster, caster.Character)
+	local targetTeam = getTeamId(targetPlayer, targetCharacter)
+	return casterTeam ~= nil and targetTeam ~= nil and casterTeam == targetTeam
+end
+
+local function canAffect(caster: Player, targetPlayer: Player?, targetCharacter: Model, targetMode: string): boolean
+	if targetMode == "Self" then
+		return targetPlayer == caster or targetCharacter == caster.Character
+	elseif targetMode == "Ally" then
+		return isAlly(caster, targetPlayer, targetCharacter)
+	end
+	return isEnemy(caster, targetPlayer, targetCharacter)
+end
+
+local function applyControl(character: Model, position: Vector3, spell: { [string]: any })
+	if spell.TargetMode == "Self" or spell.TargetMode == "Ally" then
+		return
+	end
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	local root = character:FindFirstChild("HumanoidRootPart")
+	if not humanoid or not root or not root:IsA("BasePart") then
+		return
+	end
+	if spell.ControlEffect == "Slow" or spell.ControlEffect == "Root" then
+		local oldSpeed = humanoid.WalkSpeed
+		local nextSpeed = if spell.ControlEffect == "Root" then 0 else oldSpeed * 0.55
+		humanoid.WalkSpeed = nextSpeed
+		task.delay(if spell.ControlEffect == "Root" then 0.7 else 1.5, function()
+			if humanoid.Parent and humanoid.WalkSpeed == nextSpeed then
+				humanoid.WalkSpeed = oldSpeed
+			end
+		end)
+	elseif spell.ControlEffect == "Push" or spell.ControlEffect == "Pull" then
+		local offset = root.Position - position
+		if offset.Magnitude > 0.1 then
+			local direction = offset.Unit * (if spell.ControlEffect == "Push" then 1 else -1)
+			root.AssemblyLinearVelocity += direction * 32
+		end
+	end
+end
+
+local function applyToCharacter(caster: Player, character: Model, position: Vector3, spell: { [string]: any }): boolean
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	if not humanoid or humanoid.Health <= 0 then
+		return false
+	end
+	local targetPlayer = Players:GetPlayerFromCharacter(character)
+	if not canAffect(caster, targetPlayer, character, spell.TargetMode) then
+		return false
+	end
+	if spell.TargetMode == "Self" or spell.TargetMode == "Ally" then
+		humanoid.Health = math.min(humanoid.MaxHealth, humanoid.Health + spell.HealAmount)
+	else
+		humanoid:TakeDamage(spell.Damage)
+		applyControl(character, position, spell)
+	end
+	return true
+end
+
+local function isInsideArea(
+	position: Vector3,
+	targetPosition: Vector3,
+	direction: Vector3,
+	radius: number,
+	areaShape: string
+): boolean
+	local offset = targetPosition - position
+	local distance = offset.Magnitude
+	if distance > radius then
+		return false
+	end
+	if areaShape == "Ring" then
+		return distance >= radius * 0.55
+	elseif areaShape == "Cone" and distance > 0.1 then
+		return direction:Dot(offset.Unit) >= 0.55
+	elseif areaShape == "Line" then
+		local forward = offset:Dot(direction)
+		local lateral = (offset - direction * forward).Magnitude
+		return forward >= 0 and lateral <= math.max(2.5, radius * 0.25)
+	elseif areaShape == "Wall" then
+		return math.abs(offset:Dot(direction)) <= math.max(2, radius * 0.18)
+	end
+	return true
+end
+
+local function applyArea(caster: Player, position: Vector3, direction: Vector3, spell: { [string]: any })
+	local radius = math.max(2, spell.ExplosionRadius)
 	local overlap = OverlapParams.new()
 	overlap.FilterType = Enum.RaycastFilterType.Exclude
-	overlap.FilterDescendantsInstances = if caster.Character
-		then { runtimeFolder, caster.Character }
-		else { runtimeFolder }
+	overlap.FilterDescendantsInstances = { runtimeFolder }
 	overlap.MaxParts = Config.Security.MaxExplosionParts
 
 	local damaged: { [Humanoid]: boolean } = {}
-	for _, part in ipairs(Workspace:GetPartBoundsInRadius(position, spell.ExplosionRadius, overlap)) do
+	for _, part in ipairs(Workspace:GetPartBoundsInRadius(position, radius, overlap)) do
 		local character = findCharacterModel(part)
 		if not character then
 			continue
@@ -512,29 +603,122 @@ local function damageEnemies(caster: Player, position: Vector3, spell: { [string
 		if not humanoid or humanoid.Health <= 0 or damaged[humanoid] then
 			continue
 		end
-
-		local targetPlayer = Players:GetPlayerFromCharacter(character)
-		if not isEnemy(caster, targetPlayer, character) then
+		local root = character:FindFirstChild("HumanoidRootPart")
+		if
+			not root
+			or not root:IsA("BasePart")
+			or not isInsideArea(position, root.Position, direction, radius, spell.AreaShape)
+		then
 			continue
 		end
-
-		damaged[humanoid] = true
-		humanoid:TakeDamage(spell.Damage)
+		if applyToCharacter(caster, character, position, spell) then
+			damaged[humanoid] = true
+		end
 	end
 end
 
-local function damageDirect(caster: Player, hitPart: BasePart?, spell: { [string]: any })
+local function applyDirect(caster: Player, hitPart: BasePart?, position: Vector3, spell: { [string]: any }): boolean
 	if not hitPart then
-		return
+		return false
 	end
 	local character = findCharacterModel(hitPart)
 	if not character then
-		return
+		return false
 	end
-	local humanoid = character:FindFirstChildOfClass("Humanoid")
-	local targetPlayer = Players:GetPlayerFromCharacter(character)
-	if humanoid and humanoid.Health > 0 and isEnemy(caster, targetPlayer, character) then
-		humanoid:TakeDamage(spell.Damage)
+	return applyToCharacter(caster, character, position, spell)
+end
+
+local function clampAim(origin: Vector3, requestedAim: Vector3, maxDistance: number): Vector3
+	local offset = requestedAim - origin
+	if offset.Magnitude < 2 then
+		return origin + Vector3.new(0, 0, -12)
+	end
+	return origin + offset.Unit * math.min(offset.Magnitude, maxDistance, Config.Security.MaxAimDistance)
+end
+
+local function getOrigin(root: BasePart, requestedAim: Vector3, spell: { [string]: any }): Vector3
+	if spell.OriginMode == "TargetPoint" then
+		return requestedAim + Vector3.new(0, 1.5, 0)
+	elseif spell.OriginMode == "AboveTarget" then
+		return requestedAim + Vector3.new(0, 18, 0)
+	elseif spell.OriginMode == "Ground" then
+		return root.Position + root.CFrame.LookVector * 2 + Vector3.new(0, 0.4, 0)
+	elseif spell.OriginMode == "AroundSelf" then
+		return root.Position + Vector3.new(0, 1.5, 0)
+	end
+	return root.Position + root.CFrame.LookVector * 3 + Vector3.new(0, 1.5, 0)
+end
+
+local function resolveAim(player: Player, requestedAim: Vector3, spell: { [string]: any }): Vector3
+	local character = player.Character
+	local root = if character then character:FindFirstChild("HumanoidRootPart") else nil
+	if not root or not root:IsA("BasePart") then
+		return requestedAim
+	end
+	if spell.TargetMode == "Self" then
+		return root.Position
+	elseif spell.Aiming == "DirectionFixed" then
+		return root.Position + root.CFrame.LookVector * spell.MaxDistance
+	end
+	if spell.Aiming ~= "Nearest" and spell.Aiming ~= "LockOn" then
+		return requestedAim
+	end
+
+	local center = if spell.Aiming == "LockOn" then requestedAim else root.Position
+	local radius = if spell.Aiming == "LockOn" then 30 else math.min(100, spell.MaxDistance)
+	local overlap = OverlapParams.new()
+	overlap.FilterType = Enum.RaycastFilterType.Exclude
+	overlap.FilterDescendantsInstances = { runtimeFolder }
+	overlap.MaxParts = Config.Security.MaxExplosionParts
+	local checked: { [Model]: boolean } = {}
+	local nearest = requestedAim
+	local nearestDistance = math.huge
+	for _, part in ipairs(Workspace:GetPartBoundsInRadius(center, radius, overlap)) do
+		local model = findCharacterModel(part)
+		if not model or checked[model] then
+			continue
+		end
+		checked[model] = true
+		if spell.TargetMode == "Ally" and model == character then
+			continue
+		end
+		local modelRoot = model:FindFirstChild("HumanoidRootPart")
+		local targetPlayer = Players:GetPlayerFromCharacter(model)
+		if modelRoot and modelRoot:IsA("BasePart") and canAffect(player, targetPlayer, model, spell.TargetMode) then
+			local distance = (modelRoot.Position - center).Magnitude
+			if distance < nearestDistance then
+				nearestDistance = distance
+				nearest = modelRoot.Position
+			end
+		end
+	end
+	return nearest
+end
+
+local function impactAt(
+	player: Player,
+	position: Vector3,
+	direction: Vector3,
+	hitPart: BasePart?,
+	spell: { [string]: any }
+)
+	vfxEvent:FireAllClients("Explosion", { Position = position, Scale = spell.ExplosionVFXScale, Color = spell.Color })
+	if spell.TargetMode == "Self" and player.Character then
+		applyToCharacter(player, player.Character, position, spell)
+	elseif spell.IsDirect then
+		applyDirect(player, hitPart, position, spell)
+	else
+		applyArea(player, position, direction, spell)
+	end
+	if spell.AttackMode == "Field" or spell.Delivery == "Field" or spell.CastStyle == "Channel" then
+		local pulseCount = math.clamp(math.floor(spell.Duration), 2, 8)
+		for pulse = 2, pulseCount do
+			task.delay((pulse - 1) * 0.7, function()
+				if player.Parent == Players then
+					applyArea(player, position, direction, spell)
+				end
+			end)
+		end
 	end
 end
 
@@ -546,29 +730,41 @@ local function launchProjectile(player: Player, requestedAim: Vector3, spell: { 
 		return
 	end
 
-	local origin = root.Position + root.CFrame.LookVector * 3 + Vector3.new(0, 1.5, 0)
-	local offset = requestedAim - origin
+	local target = if spell.TargetMode == "Self"
+		then root.Position
+		else clampAim(root.Position, requestedAim, spell.MaxDistance)
+	local origin = getOrigin(root, target, spell)
+	local offset = target - origin
 	if offset.Magnitude < 2 then
-		offset = root.CFrame.LookVector * 12
+		offset = if spell.OriginMode == "AboveTarget" then Vector3.new(0, -12, 0) else root.CFrame.LookVector * 12
 	end
 	local distance = math.min(offset.Magnitude, spell.MaxDistance, Config.Security.MaxAimDistance)
 	local aimCFrame = CFrame.lookAt(Vector3.zero, offset.Unit)
 	local direction = (aimCFrame * CFrame.Angles(0, math.rad(spreadAngle), 0)).LookVector
+	if spell.Trajectory == "GroundFollow" then
+		local flat = Vector3.new(direction.X, 0, direction.Z)
+		if flat.Magnitude > 0.1 then
+			direction = flat.Unit
+		end
+	end
 	local targetPosition = origin + direction * distance
 
 	local castCFrame = CFrame.lookAt(origin, targetPosition)
-	vfxEvent:FireAllClients("Cast", { CFrame = castCFrame, Scale = spell.ProjectileScale })
-	local projectile = FireVFX.CreateProjectile(castCFrame, runtimeFolder)
+	vfxEvent:FireAllClients("Cast", { CFrame = castCFrame, Scale = spell.ProjectileScale, Color = spell.Color })
+	local projectile = FireVFX.CreateProjectile(castCFrame, runtimeFolder, spell.Color)
 	projectile.Size *= spell.ProjectileScale
 	projectile:SetAttribute("LMV2_OwnerUserId", player.UserId)
 	activeProjectileCount[player] = (activeProjectileCount[player] or 0) + 1
 
 	local raycast = RaycastParams.new()
 	raycast.FilterType = Enum.RaycastFilterType.Exclude
-	raycast.FilterDescendantsInstances = { character, runtimeFolder }
+	local raycastExcludes: { Instance } = { character, runtimeFolder }
+	raycast.FilterDescendantsInstances = raycastExcludes
 	raycast.IgnoreWater = true
 
 	local traveled = 0
+	local penetrationsLeft = spell.Penetrations
+	local bouncesLeft = spell.Bounces
 	local finished = false
 	local connection: RBXScriptConnection? = nil
 
@@ -590,15 +786,7 @@ local function launchProjectile(player: Player, requestedAim: Vector3, spell: { 
 		end
 
 		if shouldImpact then
-			vfxEvent:FireAllClients("Explosion", {
-				Position = position,
-				Scale = spell.ExplosionVFXScale,
-			})
-			if spell.IsDirect then
-				damageDirect(player, hitPart, spell)
-			else
-				damageEnemies(player, position, spell)
-			end
+			impactAt(player, position, direction, hitPart, spell)
 		end
 	end
 
@@ -614,11 +802,42 @@ local function launchProjectile(player: Player, requestedAim: Vector3, spell: { 
 			return
 		end
 
+		if spell.Trajectory == "Arc" then
+			direction = (direction + Vector3.new(0, -0.012, 0)).Unit
+		elseif spell.Trajectory == "Homing" then
+			local desired = requestedAim - projectile.Position
+			if desired.Magnitude > 1 then
+				direction = direction:Lerp(desired.Unit, 0.08).Unit
+			end
+		elseif spell.Trajectory == "Spiral" then
+			local side = direction:Cross(Vector3.yAxis)
+			if side.Magnitude > 0.1 then
+				direction = (direction + side.Unit * math.sin(traveled * 0.08) * 0.08).Unit
+			end
+		end
 		local stepDistance = math.min(spell.ProjectileSpeed * math.min(deltaTime, 0.1), remaining)
 		local currentPosition = projectile.Position
 		local result = Workspace:Raycast(currentPosition, direction * stepDistance, raycast)
 		if result then
-			finish(result.Position, true, result.Instance)
+			local hitPart = if result.Instance:IsA("BasePart") then result.Instance else nil
+			local hitCharacter = if hitPart then findCharacterModel(hitPart) else nil
+			if spell.AttackMode == "Pierce" and hitCharacter and penetrationsLeft > 0 then
+				applyDirect(player, hitPart, result.Position, spell)
+				penetrationsLeft -= 1
+				table.insert(raycastExcludes, hitCharacter)
+				raycast.FilterDescendantsInstances = raycastExcludes
+				projectile.Position = result.Position + direction * 0.25
+				traveled += stepDistance
+				return
+			elseif spell.AttackMode == "Bounce" and bouncesLeft > 0 then
+				impactAt(player, result.Position, direction, hitPart, spell)
+				direction = (direction - 2 * direction:Dot(result.Normal) * result.Normal).Unit
+				bouncesLeft -= 1
+				projectile.Position = result.Position + direction * 0.25
+				traveled += stepDistance
+				return
+			end
+			finish(result.Position, true, hitPart)
 			return
 		end
 
@@ -631,9 +850,73 @@ local function launchProjectile(player: Player, requestedAim: Vector3, spell: { 
 	end)
 end
 
+local function launchInstant(player: Player, requestedAim: Vector3, spell: { [string]: any })
+	local character = player.Character
+	local root = if character then character:FindFirstChild("HumanoidRootPart") else nil
+	if not root or not root:IsA("BasePart") then
+		return
+	end
+	local target = if spell.TargetMode == "Self"
+		then root.Position
+		else clampAim(root.Position, requestedAim, spell.MaxDistance)
+	local origin = getOrigin(root, target, spell)
+	local direction = target - origin
+	if direction.Magnitude < 0.1 then
+		direction = root.CFrame.LookVector
+	else
+		direction = direction.Unit
+	end
+	local castCFrame = CFrame.lookAt(origin, target)
+	vfxEvent:FireAllClients("Cast", { CFrame = castCFrame, Scale = spell.ProjectileScale, Color = spell.Color })
+	local impactPosition = target
+	local hitPart: BasePart? = nil
+	if spell.Delivery == "Beam" then
+		local params = RaycastParams.new()
+		params.FilterType = Enum.RaycastFilterType.Exclude
+		params.FilterDescendantsInstances = { character, runtimeFolder }
+		local result =
+			Workspace:Raycast(origin, direction * math.min(spell.MaxDistance, (target - origin).Magnitude), params)
+		if result then
+			impactPosition = result.Position
+			hitPart = if result.Instance:IsA("BasePart") then result.Instance else nil
+		end
+	end
+	local delaySeconds = if spell.Delivery == "Trap" then 1.1 else 0
+	task.delay(delaySeconds, function()
+		if player.Parent == Players then
+			impactAt(player, impactPosition, direction, hitPart, spell)
+		end
+	end)
+end
+
 local function launchSpell(player: Player, requestedAim: Vector3, spell: { [string]: any })
-	for _, angle in ipairs(spell.SpreadAngles) do
-		launchProjectile(player, requestedAim, spell, angle)
+	local aim = resolveAim(player, requestedAim, spell)
+	if
+		spell.TargetMode == "Self"
+		or spell.Delivery ~= "Projectile"
+		or spell.OriginMode == "TargetPoint"
+		or spell.OriginMode == "Ground"
+	then
+		launchInstant(player, aim, spell)
+		return
+	end
+	local angles = table.clone(spell.SpreadAngles)
+	if spell.FirePattern == "Radial" then
+		angles = {}
+		for index = 1, spell.ProjectileCount do
+			table.insert(angles, (index - 1) * (360 / spell.ProjectileCount))
+		end
+	end
+	for index, angle in ipairs(angles) do
+		local shotAngle = angle
+		local delaySeconds = if spell.FirePattern == "Simultaneous" or spell.FirePattern == "Radial"
+			then 0
+			else (index - 1) * spell.ShotInterval
+		task.delay(delaySeconds, function()
+			if player.Parent == Players then
+				launchProjectile(player, aim, spell, shotAngle)
+			end
+		end)
 	end
 end
 
@@ -703,7 +986,34 @@ local function handleCastRequest(player: Player, payload: any)
 	end
 
 	player:SetAttribute(Config.CooldownEndAttribute, now + spell.Cooldown)
-	launchSpell(player, aimPosition, spell)
+	local originalWalkSpeed = humanoid.WalkSpeed
+	local changedWalkSpeed: number? = nil
+	if spell.Movement == "Stop" then
+		changedWalkSpeed = 0
+	elseif spell.Movement == "Slow" then
+		changedWalkSpeed = originalWalkSpeed * 0.45
+	elseif spell.Movement == "Advance" then
+		characterRoot.AssemblyLinearVelocity += characterRoot.CFrame.LookVector * 20
+	elseif spell.Movement == "Blink" then
+		local params = RaycastParams.new()
+		params.FilterType = Enum.RaycastFilterType.Exclude
+		params.FilterDescendantsInstances = { character, runtimeFolder }
+		local blinkOffset = characterRoot.CFrame.LookVector * 7
+		if not Workspace:Raycast(characterRoot.Position, blinkOffset, params) then
+			character:PivotTo(character:GetPivot() + blinkOffset)
+		end
+	end
+	if changedWalkSpeed ~= nil then
+		humanoid.WalkSpeed = changedWalkSpeed
+	end
+	task.delay(spell.CastDelay, function()
+		if changedWalkSpeed ~= nil and humanoid.Parent and humanoid.WalkSpeed == changedWalkSpeed then
+			humanoid.WalkSpeed = originalWalkSpeed
+		end
+		if player.Parent == Players and getState(player) == "Ground" then
+			launchSpell(player, aimPosition, spell)
+		end
+	end)
 	sendSnapshot(player)
 end
 
