@@ -49,6 +49,7 @@ local Config = {
 		ExitGateName = "ExitGate",
 		ReturnGateName = "ReturnGate",
 		TeleportHeight = 4,
+		SpawnEdgePadding = 3,
 		PromptDistance = 12,
 	},
 
