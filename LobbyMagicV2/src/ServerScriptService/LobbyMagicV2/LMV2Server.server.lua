@@ -196,6 +196,19 @@ local function sendFeedback(player: Player, code: string, message: string)
 	})
 end
 
+local spawnRandom = Random.new()
+
+local function randomSpawnCFrame(destination: BasePart): CFrame
+	local padding = math.max(0, Config.World.SpawnEdgePadding)
+	local halfWidth = math.max(0, destination.Size.X * 0.5 - padding)
+	local halfDepth = math.max(0, destination.Size.Z * 0.5 - padding)
+	local x = if halfWidth > 0 then spawnRandom:NextNumber(-halfWidth, halfWidth) else 0
+	local z = if halfDepth > 0 then spawnRandom:NextNumber(-halfDepth, halfDepth) else 0
+	local y = destination.Size.Y * 0.5 + Config.World.TeleportHeight
+
+	return destination.CFrame * CFrame.new(x, y, z)
+end
+
 local function teleportCharacter(player: Player, destination: BasePart?): boolean
 	if not destination then
 		return false
@@ -214,7 +227,7 @@ local function teleportCharacter(player: Player, destination: BasePart?): boolea
 
 	root.AssemblyLinearVelocity = Vector3.zero
 	root.AssemblyAngularVelocity = Vector3.zero
-	character:PivotTo(destination.CFrame * CFrame.new(0, Config.World.TeleportHeight, 0))
+	character:PivotTo(randomSpawnCFrame(destination))
 	return true
 end
 

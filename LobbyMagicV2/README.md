@@ -114,6 +114,10 @@ Workspace
 | ExitGate | グラウンドへ出る | 近づける位置へ配置 |
 | ReturnGate | ロビーへ戻る | グラウンド側へ配置 |
 
+プレイヤーは `LobbySpawn` / `GroundSpawn` の上面へランダムに配置されます。
+重なりを減らすため、スポーン用のPartは複数人が立てる十分なX/Zサイズにしてください。
+端からの余白は `LMV2Config.lua` の `SpawnEdgePadding` で調整できます。
+
 サーバーは次のPromptだけを自動追加します。
 
 ~~~text
