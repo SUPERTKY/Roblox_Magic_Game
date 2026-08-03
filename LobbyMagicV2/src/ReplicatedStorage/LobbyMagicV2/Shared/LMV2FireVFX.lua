@@ -72,29 +72,50 @@ local function emitStoredParticles(container: Instance)
 	end
 end
 
-function FireVFX.CreateProjectile(cframe: CFrame, parent: Instance): BasePart
+local function tintEffect(container: Instance, color: Color3?)
+	if not color then
+		return
+	end
+	if container:IsA("BasePart") then
+		container.Color = color
+	end
+	for _, descendant in ipairs(container:GetDescendants()) do
+		if descendant:IsA("BasePart") then
+			descendant.Color = color
+		elseif descendant:IsA("ParticleEmitter") or descendant:IsA("Trail") or descendant:IsA("Beam") then
+			descendant.Color = ColorSequence.new(color)
+		elseif descendant:IsA("PointLight") then
+			descendant.Color = color
+		end
+	end
+end
+
+function FireVFX.CreateProjectile(cframe: CFrame, parent: Instance, color: Color3?): BasePart
 	local projectile = cloneTemplate("Projectile")
 	projectile.Name = "LMV2_FireProjectile"
 	projectile.CFrame = cframe
+	tintEffect(projectile, color)
 	projectile.Parent = parent
 	return projectile
 end
 
-function FireVFX.Cast(cframe: CFrame, parent: Instance, scale: number?)
+function FireVFX.Cast(cframe: CFrame, parent: Instance, scale: number?, color: Color3?)
 	local effect = cloneTemplate("Cast")
 	effect.Name = "LMV2_CastFx"
 	effect.CFrame = cframe
 	effect.Size *= math.clamp(scale or 1, 0.35, 2)
+	tintEffect(effect, color)
 	effect.Parent = parent
 	emitStoredParticles(effect)
 	Debris:AddItem(effect, 1.25)
 end
 
-function FireVFX.Explode(position: Vector3, parent: Instance, scale: number?)
+function FireVFX.Explode(position: Vector3, parent: Instance, scale: number?, color: Color3?)
 	local effect = cloneTemplate("Explosion")
 	effect.Name = "LMV2_ExplosionFx"
 	effect.CFrame = CFrame.new(position)
 	effect.Size *= math.clamp(scale or 1, 0.35, 2)
+	tintEffect(effect, color)
 	effect.Parent = parent
 	emitStoredParticles(effect)
 
