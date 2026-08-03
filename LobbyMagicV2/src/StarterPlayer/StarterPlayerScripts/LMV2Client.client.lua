@@ -17,6 +17,7 @@ local Config = require(shared:WaitForChild("LMV2Config"))
 local FireVFX = require(shared:WaitForChild("LMV2FireVFX"))
 local remotes = systemRoot:WaitForChild("Remotes")
 local castSpellRequest = remotes:WaitForChild("CastSpellRequest") :: RemoteEvent
+local lobbyActionRequest = remotes:WaitForChild("LobbyActionRequest") :: RemoteEvent
 local feedback = remotes:WaitForChild("Feedback") :: RemoteEvent
 local vfxEvent = remotes:WaitForChild("VFXEvent") :: RemoteEvent
 
@@ -29,6 +30,13 @@ end
 
 local ACTION_CAST = "LMV2_CastFirebomb"
 local lastTouchViewportPosition: Vector2? = nil
+local SLOT_BY_KEY = {
+	[Enum.KeyCode.One] = 1,
+	[Enum.KeyCode.Two] = 2,
+	[Enum.KeyCode.Three] = 3,
+	[Enum.KeyCode.Four] = 4,
+	[Enum.KeyCode.Five] = 5,
+}
 
 local function isInGround(): boolean
 	return player:GetAttribute(Config.StateAttribute) == "Ground"
@@ -101,7 +109,10 @@ UserInputService.InputBegan:Connect(function(input: InputObject, gameProcessed: 
 	end
 
 	local inset = GuiService:GetGuiInset()
-	if input.UserInputType == Enum.UserInputType.Touch then
+	local requestedSlot = SLOT_BY_KEY[input.KeyCode]
+	if requestedSlot then
+		lobbyActionRequest:FireServer({ Action = "EquipSpell", Slot = requestedSlot })
+	elseif input.UserInputType == Enum.UserInputType.Touch then
 		lastTouchViewportPosition = Vector2.new(input.Position.X, input.Position.Y) - inset
 	elseif input.UserInputType == Enum.UserInputType.MouseButton1 then
 		local mousePosition = UserInputService:GetMouseLocation() - inset
@@ -126,9 +137,9 @@ vfxEvent.OnClientEvent:Connect(function(kind: any, payload: any)
 
 	local ok, message = pcall(function()
 		if kind == "Cast" and typeof(payload.CFrame) == "CFrame" then
-			FireVFX.Cast(payload.CFrame, clientVfxFolder)
+			FireVFX.Cast(payload.CFrame, clientVfxFolder, tonumber(payload.Scale))
 		elseif kind == "Explosion" and typeof(payload.Position) == "Vector3" then
-			FireVFX.Explode(payload.Position, clientVfxFolder)
+			FireVFX.Explode(payload.Position, clientVfxFolder, tonumber(payload.Scale))
 		end
 	end)
 	if not ok then

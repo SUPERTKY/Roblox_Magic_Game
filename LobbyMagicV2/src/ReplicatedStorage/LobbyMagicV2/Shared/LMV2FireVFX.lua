@@ -80,19 +80,21 @@ function FireVFX.CreateProjectile(cframe: CFrame, parent: Instance): BasePart
 	return projectile
 end
 
-function FireVFX.Cast(cframe: CFrame, parent: Instance)
+function FireVFX.Cast(cframe: CFrame, parent: Instance, scale: number?)
 	local effect = cloneTemplate("Cast")
 	effect.Name = "LMV2_CastFx"
 	effect.CFrame = cframe
+	effect.Size *= math.clamp(scale or 1, 0.35, 2)
 	effect.Parent = parent
 	emitStoredParticles(effect)
 	Debris:AddItem(effect, 1.25)
 end
 
-function FireVFX.Explode(position: Vector3, parent: Instance)
+function FireVFX.Explode(position: Vector3, parent: Instance, scale: number?)
 	local effect = cloneTemplate("Explosion")
 	effect.Name = "LMV2_ExplosionFx"
 	effect.CFrame = CFrame.new(position)
+	effect.Size *= math.clamp(scale or 1, 0.35, 2)
 	effect.Parent = parent
 	emitStoredParticles(effect)
 
