@@ -23,6 +23,18 @@ local Config = {
 		ProjectileSize = "LMV2_SelectedProjectileSize",
 		ProjectileSpeed = "LMV2_SelectedProjectileSpeed",
 		Attack = "LMV2_SelectedAttack",
+		SpellShape = "LMV2_SelectedSpellShape",
+		Trajectory = "LMV2_SelectedTrajectory",
+		Aiming = "LMV2_SelectedAiming",
+		FirePattern = "LMV2_SelectedFirePattern",
+		CastStyle = "LMV2_SelectedCastStyle",
+		Performance = "LMV2_SelectedPerformance",
+		Range = "LMV2_SelectedRange",
+		Duration = "LMV2_SelectedDuration",
+		AreaShape = "LMV2_SelectedAreaShape",
+		ControlEffect = "LMV2_SelectedControlEffect",
+		Movement = "LMV2_SelectedMovement",
+		Theme = "LMV2_SelectedTheme",
 	},
 
 	Inventory = {
@@ -33,7 +45,7 @@ local Config = {
 
 	Persistence = {
 		DataStoreName = "LobbyMagicV2_Spells_v1",
-		DataVersion = 1,
+		DataVersion = 2,
 		AutosaveSeconds = 60,
 	},
 
@@ -61,12 +73,12 @@ local Config = {
 	},
 
 	Security = {
-		MaxAimDistance = 160,
+		MaxAimDistance = 220,
 		MinCastInterval = 0.18,
 		LobbyActionInterval = 0.25,
 		MaxExplosionParts = 120,
-		MaxProjectilesPerCast = 5,
-		MaxProjectilesPerPlayer = 6,
+		MaxProjectilesPerCast = 8,
+		MaxProjectilesPerPlayer = 16,
 	},
 }
 
