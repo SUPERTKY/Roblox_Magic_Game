@@ -48,7 +48,6 @@ local dataReady = false
 local inForgeZone = false
 local zoneCheckElapsed = 0
 local selectorValues: { [string]: TextLabel } = {}
-local selectorRows: { [string]: Frame } = {}
 local inventoryButtons: { TextButton } = {}
 local hotbarButtons: { TextButton } = {}
 
@@ -234,23 +233,11 @@ deleteButton.Position = UDim2.new(1, -190, 0, 142)
 deleteButton.Size = UDim2.fromOffset(170, 38)
 deleteButton.BackgroundColor3 = COLORS.Red
 
-local selectorTabs = Instance.new("Frame")
-selectorTabs.Name = "SelectorTabs"
-selectorTabs.Position = UDim2.fromOffset(20, 190)
-selectorTabs.Size = UDim2.new(1, -40, 0, 32)
-selectorTabs.BackgroundTransparency = 1
-selectorTabs.Parent = forgePanel
-
-local selectorContainer = Instance.new("ScrollingFrame")
+local selectorContainer = Instance.new("Frame")
 selectorContainer.Name = "Selectors"
-selectorContainer.Position = UDim2.fromOffset(20, 228)
-selectorContainer.Size = UDim2.new(1, -40, 0, 250)
+selectorContainer.Position = UDim2.fromOffset(20, 190)
+selectorContainer.Size = UDim2.new(1, -40, 0, 288)
 selectorContainer.BackgroundTransparency = 1
-selectorContainer.BorderSizePixel = 0
-selectorContainer.ScrollBarThickness = 6
-selectorContainer.ScrollBarImageColor3 = COLORS.Orange
-selectorContainer.AutomaticCanvasSize = Enum.AutomaticSize.Y
-selectorContainer.CanvasSize = UDim2.new()
 selectorContainer.Parent = forgePanel
 
 local selectorLayout = Instance.new("UIListLayout")
@@ -269,13 +256,7 @@ local function cycleSelection(category: string, direction: number)
 	end
 	local currentIndex = table.find(options, selection[category]) or 1
 	local nextIndex = ((currentIndex - 1 + direction) % #options) + 1
-	local previousId = selection[category]
 	selection[category] = options[nextIndex]
-	if not SpellCatalog.Build(selection) then
-		selection[category] = previousId
-		showToast("魔力上限を超える組み合わせです。別の設定を下げてください。")
-		return
-	end
 	updateSelectionDisplay()
 end
 
@@ -287,7 +268,6 @@ for order, category in ipairs(SpellCatalog.ComponentOrder) do
 	row.BackgroundColor3 = COLORS.PanelLight
 	row.BorderSizePixel = 0
 	row.Parent = selectorContainer
-	selectorRows[category] = row
 	addCorner(row, 8)
 
 	local categoryName = makeLabel(
@@ -326,39 +306,6 @@ for order, category in ipairs(SpellCatalog.ComponentOrder) do
 		cycleSelection(category, 1)
 	end)
 end
-
-local activeSelectorGroup = "Basic"
-local tabButtons: { [string]: TextButton } = {}
-local groupOrder = { "Basic", "Advanced", "Appearance" }
-local groupNames: { [string]: string } = { Basic = "基本設定", Advanced = "詳細設定", Appearance = "見た目" }
-
-local function showSelectorGroup(groupName: string)
-	activeSelectorGroup = groupName
-	local visibleCategories: { [string]: boolean } = {}
-	for _, category in ipairs(SpellCatalog.ComponentGroups[groupName]) do
-		visibleCategories[category] = true
-	end
-	for category, row in pairs(selectorRows) do
-		row.Visible = visibleCategories[category] == true
-	end
-	selectorContainer.CanvasPosition = Vector2.zero
-	for name, button in pairs(tabButtons) do
-		button.BackgroundColor3 = if name == groupName then COLORS.Orange else COLORS.PanelLight
-	end
-end
-
-for index, groupName in ipairs(groupOrder) do
-	local button = makeButton(selectorTabs, groupName, groupNames[groupName])
-	button.Position = UDim2.new((index - 1) / #groupOrder, 3, 0, 0)
-	button.Size = UDim2.new(1 / #groupOrder, -6, 1, 0)
-	button.TextSize = 12
-	tabButtons[groupName] = button
-	button.Activated:Connect(function()
-		showSelectorGroup(groupName)
-	end)
-end
-
-showSelectorGroup(activeSelectorGroup)
 
 local spellSummary = Instance.new("Frame")
 spellSummary.Position = UDim2.fromOffset(20, 490)
@@ -515,9 +462,6 @@ updateSelectionDisplay = function()
 	local built = SpellCatalog.Build(selection)
 	if built then
 		selectedSpell = built
-	else
-		showToast("この組み合わせは魔力上限を超えています。")
-		return
 	end
 	for _, category in ipairs(SpellCatalog.ComponentOrder) do
 		local component = SpellCatalog.GetComponent(category, selection[category])
@@ -538,12 +482,11 @@ updateSelectionDisplay = function()
 		selectedSpell.Cooldown
 	)
 	details.Text = string.format(
-		"速度 %.0f / 射程 %d / 範囲 %d / %s / %s",
+		"速度 %.0f / 射程 %d / 爆発半径 %d / 魔力上限 %d",
 		selectedSpell.ProjectileSpeed,
 		selectedSpell.MaxDistance,
 		selectedSpell.ExplosionRadius,
-		selectedSpell.Delivery,
-		selectedSpell.ControlEffect
+		Config.Inventory.MaximumManaCost
 	)
 end
 
