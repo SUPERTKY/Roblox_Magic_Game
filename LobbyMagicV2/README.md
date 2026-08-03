@@ -49,14 +49,13 @@ ReplicatedStorage
 
 ## Studioで作成する3D構造
 
-`Workspace`へ次の構造を**完全一致の名前**で作成してください。6個の中身はすべて `Part`、`MeshPart`、`SpawnLocation`などの `BasePart` にします。
+`Workspace`へ次の構造を**完全一致の名前**で作成してください。5個の中身はすべて `Part`、`MeshPart`、`SpawnLocation`などの `BasePart` にします。
 
 ```text
 Workspace
 └─ LMV2_World (Folder または Model)
    ├─ LobbySpawn (BasePart)
    ├─ GroundSpawn (BasePart)
-   ├─ ForgeConsole (BasePart)
    ├─ ForgeUIZone (BasePart)
    ├─ ExitGate (BasePart)
    └─ ReturnGate (BasePart)
@@ -66,15 +65,13 @@ Workspace
 |---|---|---|
 | `LobbySpawn` | 参加・敗北・帰還時の位置 | `Anchored=true`。見せない場合は透明化 |
 | `GroundSpawn` | 出撃時の位置 | `Anchored=true`。床より少し上へ配置 |
-| `ForgeConsole` | 最初の炎魔法を作る場所 | プレイヤーが12stud以内へ近づける場所 |
 | `ForgeUIZone` | 設定UIを表示する範囲 | `Anchored=true`、`CanCollide=false`、`Transparency=1`。工房を覆う大きさにする |
 | `ExitGate` | ロビーからグラウンドへ出る場所 | プレイヤーが12stud以内へ近づける場所 |
 | `ReturnGate` | グラウンドからロビーへ戻る場所 | グラウンド側へ配置 |
 
-`ForgeConsole`、`ExitGate`、`ReturnGate`には、サーバースクリプトが次の `ProximityPrompt` を自動追加します。手動でPromptを作る必要はありません。
+`ExitGate`と`ReturnGate`には、サーバースクリプトが次の `ProximityPrompt` を自動追加します。手動でPromptを作る必要はありません。
 
 ```text
-ForgeConsole/LMV2_ForgePrompt
 ExitGate/LMV2_ExitPrompt
 ReturnGate/LMV2_ReturnPrompt
 ```
@@ -93,7 +90,7 @@ StudioのRojoプラグインから接続したあと、Playテストを開始し
 
 旧プロジェクトの `RobloxMagicSystem/default.project.json` と同時に同期する必要はありません。既にStudioに旧システムが入っていても、新システムの名前とRemoteは衝突しません。同じ入力で旧魔法まで発動しないように、旧 `FireballClient` / `SpellClient` は無効化してください。炎VFXの `ReplicatedStorage/FireballVFX/Templates` は必ず残します。
 
-## UIなしでのゲーム進行
+## 自動生成UIを無効化する場合
 
 `Shared/LMV2Config.lua` の次を `false` にすると、自動生成UIを停止できます。
 
@@ -101,9 +98,9 @@ StudioのRojoプラグインから接続したあと、Playテストを開始し
 EnableGeneratedUI = false
 ```
 
-UIが無くても次の操作は残ります。
+無効化後も出撃・発動・帰還の操作は残りますが、魔法作成には別のUIが必要です。別UIから `LobbyActionRequest` へ `CreateSpell` と選択内容を送り、プレイヤーが `ForgeUIZone` 内にいる状態で保存してください。
 
-1. `ForgeConsole`のPromptで炎魔法を作る
+1. 別UIで魔法を作る
 2. `ExitGate`のPromptでグラウンドへ出る
 3. PCは左クリックまたは`F`、ゲームパッドは`R2`で発動。スマホは画面をタップして狙い、`FIRE`ボタンで発動
 4. `ReturnGate`のPromptでロビーへ戻る
@@ -114,7 +111,7 @@ UIが無くても次の操作は残ります。
 
 設定UIはロビーにいるだけでは表示されません。プレイヤーの `HumanoidRootPart` が `ForgeUIZone` の箱型範囲内へ入ったときだけ表示され、外へ出ると閉じます。回転させた `ForgeUIZone` にも対応します。
 
-`ForgeUIZone` が無くても、`ForgeConsole` のPromptから既定設定の魔法を作れるため、UIなしの進行は止まりません。
+`ForgeUIZone` が無い場合、魔法作成リクエストはサーバーに拒否されます。
 
 ## 生成UIに含まれるもの
 
@@ -132,7 +129,7 @@ Studioで `ScreenGui` を作成する必要はありません。`LMV2UI.client.l
 
 現在は各項目に1個の選択肢しかありません。左右ボタンは表示され、押すと「現在1種類だけ」と案内します。`LMV2SpellCatalog.lua` の `Components` と `OptionOrder` に選択肢を追加すると、同じUIで循環切替できます。
 
-3D側のPromptと同じサーバー関数を使うため、UIからだけ特別な処理は行いません。
+魔法設定はクライアントの数値を信用せず、サーバーがカタログから組み立て直します。
 
 ## 別のUIへ交換するときに必要な接続
 
@@ -196,7 +193,7 @@ EnemyDummy (Model)
 1. Play開始時に `LobbySpawn`へ移動する
 2. `ForgeUIZone`の外では設定UIが非表示、内側では表示される
 3. 5項目の左右ボタンが表示され、現在1種類だけという案内が出る
-4. 工房PromptまたはUIでファイアボムを作る
+4. 設定UIでファイアボムを作る
 5. 表示がマナ37・クールダウン3.5秒になる
 6. ExitGateから`GroundSpawn`へ移動する
 7. StudioのClient表示で、発射時と着弾時のエフェクトが表示される
