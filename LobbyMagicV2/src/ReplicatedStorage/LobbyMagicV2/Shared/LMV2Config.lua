@@ -21,14 +21,13 @@ local Config = {
 	},
 
 	-- falseにするとLobbyMagicV2UIは何も作りません。
-	-- ProximityPromptとLMV2Clientによる発動は残るため、ゲーム機能は止まりません。
+	-- 魔法を作成するには、LobbyActionRequestを使う別のUIが必要です。
 	EnableGeneratedUI = true,
 
 	World = {
 		FolderName = "LMV2_World",
 		LobbySpawnName = "LobbySpawn",
 		GroundSpawnName = "GroundSpawn",
-		ForgeConsoleName = "ForgeConsole",
 		ForgeUIZoneName = "ForgeUIZone",
 		ExitGateName = "ExitGate",
 		ReturnGateName = "ReturnGate",
