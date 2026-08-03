@@ -137,19 +137,9 @@ vfxEvent.OnClientEvent:Connect(function(kind: any, payload: any)
 
 	local ok, message = pcall(function()
 		if kind == "Cast" and typeof(payload.CFrame) == "CFrame" then
-			FireVFX.Cast(
-				payload.CFrame,
-				clientVfxFolder,
-				tonumber(payload.Scale),
-				if typeof(payload.Color) == "Color3" then payload.Color else nil
-			)
+			FireVFX.Cast(payload.CFrame, clientVfxFolder, tonumber(payload.Scale))
 		elseif kind == "Explosion" and typeof(payload.Position) == "Vector3" then
-			FireVFX.Explode(
-				payload.Position,
-				clientVfxFolder,
-				tonumber(payload.Scale),
-				if typeof(payload.Color) == "Color3" then payload.Color else nil
-			)
+			FireVFX.Explode(payload.Position, clientVfxFolder, tonumber(payload.Scale))
 		end
 	end)
 	if not ok then
