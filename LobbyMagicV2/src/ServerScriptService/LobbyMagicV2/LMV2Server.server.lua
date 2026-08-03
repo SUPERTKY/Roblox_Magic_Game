@@ -114,7 +114,6 @@ local function worldStatus(): { [string]: boolean }
 	return {
 		LobbySpawn = worldPart(Config.World.LobbySpawnName) ~= nil,
 		GroundSpawn = worldPart(Config.World.GroundSpawnName) ~= nil,
-		ForgeConsole = worldPart(Config.World.ForgeConsoleName) ~= nil,
 		ForgeUIZone = worldPart(Config.World.ForgeUIZoneName) ~= nil,
 		ExitGate = worldPart(Config.World.ExitGateName) ~= nil,
 		ReturnGate = worldPart(Config.World.ReturnGateName) ~= nil,
@@ -204,18 +203,17 @@ local function setLobby(player: Player, shouldTeleport: boolean)
 	sendSnapshot(player)
 end
 
-local function createExampleSpell(player: Player, requestedSelection: any?)
+local function createExampleSpell(player: Player, requestedSelection: any)
 	if getState(player) ~= "Lobby" then
 		sendFeedback(player, "LobbyOnly", "魔法はロビーの工房で作成してください。")
 		return
 	end
-	if requestedSelection ~= nil and not playerIsInsidePart(player, worldPart(Config.World.ForgeUIZoneName)) then
+	if not playerIsInsidePart(player, worldPart(Config.World.ForgeUIZoneName)) then
 		sendFeedback(player, "ForgeZoneOnly", "魔法設定は ForgeUIZone の中で保存してください。")
 		return
 	end
 
-	local selection = if requestedSelection == nil then getPlayerSelection(player) else requestedSelection
-	local spell = SpellCatalog.Build(selection)
+	local spell = SpellCatalog.Build(requestedSelection)
 	if not spell then
 		sendFeedback(player, "InvalidSelection", "選択された魔法設定は使用できません。")
 		return
@@ -245,7 +243,7 @@ local function enterGround(player: Player)
 		return
 	end
 	if not hasExampleSpell(player) then
-		sendFeedback(player, "NeedSpell", "先に ForgeConsole で炎魔法を作ってください。")
+		sendFeedback(player, "NeedSpell", "先に ForgeUIZone で魔法を作ってください。")
 		return
 	end
 
@@ -566,14 +564,9 @@ end
 local function setupWorldPrompts()
 	disconnectPromptConnections()
 
-	local forge = worldPart(Config.World.ForgeConsoleName)
 	local exitGate = worldPart(Config.World.ExitGateName)
 	local returnGate = worldPart(Config.World.ReturnGateName)
 
-	if forge then
-		local prompt = ensurePrompt(forge, "LMV2_ForgePrompt", "炎魔法を作る", "魔法工房")
-		table.insert(promptConnections, prompt.Triggered:Connect(createExampleSpell))
-	end
 	if exitGate then
 		local prompt = ensurePrompt(exitGate, "LMV2_ExitPrompt", "出撃する", "グラウンドゲート")
 		table.insert(promptConnections, prompt.Triggered:Connect(enterGround))
@@ -666,7 +659,6 @@ local function isDirectWorldChild(instance: Instance): boolean
 
 	return instance.Name == Config.World.LobbySpawnName
 		or instance.Name == Config.World.GroundSpawnName
-		or instance.Name == Config.World.ForgeConsoleName
 		or instance.Name == Config.World.ForgeUIZoneName
 		or instance.Name == Config.World.ExitGateName
 		or instance.Name == Config.World.ReturnGateName
