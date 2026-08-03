@@ -57,7 +57,11 @@ end
 
 local function normalizeData(value: any): Session
 	local session = emptySession(true)
-	if typeof(value) ~= "table" or value.Version ~= Config.Persistence.DataVersion then
+	if typeof(value) ~= "table" then
+		return session
+	end
+	local version = if typeof(value.Version) == "number" then math.floor(value.Version) else 1
+	if version < 1 or version > Config.Persistence.DataVersion then
 		return session
 	end
 
@@ -75,6 +79,9 @@ local function normalizeData(value: any): Session
 
 	local requestedSlot = if typeof(value.ActiveSlot) == "number" then math.floor(value.ActiveSlot) else 1
 	session.ActiveSlot = if #session.Spells > 0 then math.clamp(requestedSlot, 1, #session.Spells) else 0
+	-- v1の8項目データはCatalog.Buildが残り12項目を標準値で補完します。
+	-- 次回の自動保存でv2へ書き戻します。
+	session.Dirty = version < Config.Persistence.DataVersion
 	return session
 end
 
